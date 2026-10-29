@@ -1,0 +1,3 @@
+tests/test-vars.yml
+*.retry
+__pycache__/

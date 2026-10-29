@@ -1,0 +1,44 @@
+---
+- name: Check Dask worker settings
+  ansible.builtin.assert:
+    that: rsdat_dask_worker_python | length > 0
+    fail_msg: >-
+      Set rsdat_dask_worker_python to the Python on the Slurm cluster that has
+      dask/distributed {{ rsdat_dask_version }} installed.
+
+- name: Create configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/dask
+    - "{{ rsdat_config_dir }}/jupyter"
+
+- name: Dask configuration (SLURMCluster defaults, Dask extension cluster factory)
+  ansible.builtin.template:
+    src: dask-rsdat.yaml.j2
+    dest: /etc/dask/rsdat.yaml
+    mode: "0644"
+  notify: Restart JupyterLab
+
+- name: JupyterLab server configuration
+  ansible.builtin.template:
+    src: jupyter_server_config.py.j2
+    dest: "{{ rsdat_config_dir }}/jupyter/jupyter_server_config.py"
+    mode: "0644"
+  notify: Restart JupyterLab
+
+- name: JupyterLab service
+  ansible.builtin.template:
+    src: rsdat-jupyterlab.service.j2
+    dest: /etc/systemd/system/rsdat-jupyterlab.service
+    mode: "0644"
+  notify: Restart JupyterLab
+
+- name: Enable and start JupyterLab
+  ansible.builtin.systemd:
+    name: rsdat-jupyterlab
+    enabled: true
+    state: started
+    daemon_reload: true

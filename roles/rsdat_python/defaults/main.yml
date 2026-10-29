@@ -1,0 +1,16 @@
+---
+# Versions. Dask and distributed MUST match the versions in the worker environment on the Slurm
+# cluster (rsdat_dask_worker_python), or the workers can't talk to the scheduler.
+rsdat_dask_version: "2026.8.0"
+rsdat_dask_jobqueue_version: "0.9.0"
+rsdat_jupyterlab_version: "4.6.4"
+rsdat_dask_labextension_version: "7.0.0"
+rsdat_jupyterlab_git_version: "0.55.0"
+rsdat_prefect_version: "3.9.0"
+
+# SLURM-CLI-API-Proxy client (sbatch/squeue/scancel/... over the Slurm REST API).
+# Pin to a tag or commit once the fixes are merged upstream.
+rsdat_slurm_proxy_pip_spec: "git+https://github.com/t1mk1k/SLURM-CLI-API-Proxy-client.git@fix/install-scancel-dask"
+
+# Extra pip packages for the environment (e.g. ["xarray", "uproot"])
+rsdat_extra_pip_packages: []

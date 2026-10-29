@@ -1,0 +1,45 @@
+---
+- name: Check that the Slurm REST API URL is set
+  ansible.builtin.assert:
+    that: rsdat_slurm_api_url | length > 0
+    fail_msg: "Set rsdat_slurm_api_url to the Slurm REST API of the cluster (e.g. https://slurm.snellius.surf.nl)."
+
+- name: Create directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ rsdat_config_dir }}"
+    - "{{ rsdat_slurm_bin }}"
+
+- name: Slurm REST API settings for all users
+  ansible.builtin.template:
+    src: slurm.env.j2
+    dest: "{{ rsdat_config_dir }}/slurm.env"
+    owner: root
+    group: "{{ rsdat_user }}"
+    # may contain a token: readable by the RS-DAT user only
+    mode: "{{ '0640' if rsdat_slurm_jwt | length > 0 else '0644' }}"
+  no_log: true
+
+- name: Slurm command wrappers (load settings, then run the proxy command)
+  ansible.builtin.template:
+    src: slurm-wrapper.sh.j2
+    dest: "{{ rsdat_slurm_bin }}/{{ item }}"
+    mode: "0755"
+  loop: "{{ rsdat_slurm_commands }}"
+
+- name: Helper to store a personal Slurm token
+  ansible.builtin.template:
+    src: rsdat-slurm-token.sh.j2
+    dest: "{{ rsdat_slurm_bin }}/rsdat-slurm-token"
+    mode: "0755"
+
+- name: Put the Slurm commands on the PATH of login shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/rsdat-slurm.sh
+    mode: "0644"
+    content: |
+      # RS-DAT: Slurm commands through the Slurm REST API (SLURM-CLI-API-Proxy)
+      case ":$PATH:" in *":{{ rsdat_slurm_bin }}:"*) ;; *) export PATH="{{ rsdat_slurm_bin }}:$PATH" ;; esac

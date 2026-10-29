@@ -1,0 +1,3 @@
+---
+# Prefect server data (SQLite database etc.)
+rsdat_prefect_home: "{{ rsdat_home }}/.prefect"

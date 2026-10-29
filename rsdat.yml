@@ -1,0 +1,24 @@
+---
+# RS-DAT on SURF Research Cloud: JupyterLab (Dask + git extensions) and a Prefect server on the
+# workspace, with Dask workers on a remote Slurm cluster through the SLURM-CLI-API-Proxy client.
+#
+# Run as a Research Cloud component (Ansible, runs on the workspace), or locally:
+#   sudo ansible-playbook rsdat.yml -e rsdat_slurm_api_url=https://slurm.example.org -e ...
+# See README.md for the parameters.
+- name: RS-DAT workspace (JupyterLab, Dask on Slurm via REST, Prefect)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Check operating system
+      ansible.builtin.assert:
+        that: ansible_facts['distribution'] == 'Ubuntu'
+        fail_msg: "This component supports Ubuntu only (found {{ ansible_facts['distribution'] }})."
+  roles:
+    - role: rsdat_python
+    - role: rsdat_slurm_proxy
+    - role: rsdat_jupyterlab
+    - role: rsdat_prefect
+      when: rsdat_prefect_enabled | default(true) | bool
+    - role: rsdat_nginx

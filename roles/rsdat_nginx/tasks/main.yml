@@ -1,0 +1,21 @@
+---
+# SRC-Nginx (the standard Research Cloud nginx component) must run before this component.
+# It terminates TLS, does the SRAM login (/validate) and includes app-location-conf.d/*.conf.
+- name: Check for SRC-Nginx
+  ansible.builtin.stat:
+    path: "{{ rsdat_nginx_app_config_dir }}"
+  register: rsdat_src_nginx
+
+- name: Stop if SRC-Nginx is missing
+  ansible.builtin.fail:
+    msg: "SRC-Nginx is not installed ({{ rsdat_nginx_app_config_dir }} missing): add the SRC-Nginx component before this one."
+  when: not rsdat_src_nginx.stat.exists
+
+- name: Nginx locations for JupyterLab and Prefect
+  ansible.builtin.template:
+    src: rsdat.conf.j2
+    dest: "{{ rsdat_nginx_app_config_dir }}/rsdat.conf"
+    owner: root
+    group: www-data
+    mode: "0640"
+  notify: Reload nginx

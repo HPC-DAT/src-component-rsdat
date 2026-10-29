@@ -1,0 +1,6 @@
+---
+- name: Restart Prefect
+  ansible.builtin.systemd:
+    name: rsdat-prefect
+    state: restarted
+    daemon_reload: true

@@ -1,0 +1,26 @@
+---
+# Shared settings for all roles. Each can be passed as a Research Cloud component parameter
+# (extra var). Role-specific settings are in roles/<role>/defaults/main.yml.
+
+# Host name users reach the workspace by; also the address Dask workers use to reach the scheduler
+rsdat_fqdn: "{{ ansible_facts['fqdn'] }}"
+
+# Unix user that runs JupyterLab and Prefect (created if missing). All CO members share this
+# JupyterLab; access is controlled by SRAM in SRC-Nginx.
+rsdat_user: rsdat
+rsdat_home: "/home/{{ rsdat_user }}"
+
+# Python environment with all RS-DAT software
+rsdat_venv: /opt/rsdat/venv
+# Wrappers for the Slurm commands (sbatch, squeue, ...) that go through the REST API
+rsdat_slurm_bin: /opt/rsdat/slurm-bin
+rsdat_config_dir: /etc/rsdat
+
+# URL paths behind SRC-Nginx
+rsdat_jupyterlab_path: /jupyter/
+rsdat_prefect_path: /prefect/
+
+# Local ports (bound to 127.0.0.1; nginx proxies to them)
+rsdat_jupyterlab_port: 8888
+rsdat_prefect_port: 4200
+rsdat_prefect_enabled: true

@@ -1,0 +1,10 @@
+# Stand-in for a Research Cloud Ubuntu workspace: systemd + Ansible.
+ARG BASE=ubuntu:24.04
+FROM ${BASE}
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus ca-certificates curl sudo python3 python3-venv ansible-core \
+    && rm -rf /var/lib/apt/lists/* \
+    && systemctl mask getty.target systemd-logind.service console-getty.service
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

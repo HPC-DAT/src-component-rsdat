@@ -1,0 +1,14 @@
+---
+- name: Prefect server service
+  ansible.builtin.template:
+    src: rsdat-prefect.service.j2
+    dest: /etc/systemd/system/rsdat-prefect.service
+    mode: "0644"
+  notify: Restart Prefect
+
+- name: Enable and start Prefect server
+  ansible.builtin.systemd:
+    name: rsdat-prefect
+    enabled: true
+    state: started
+    daemon_reload: true

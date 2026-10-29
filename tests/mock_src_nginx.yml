@@ -1,0 +1,47 @@
+---
+# Minimal stand-in for the SRC-Nginx component: nginx that includes
+# /etc/nginx/app-location-conf.d/*.conf and answers the SRAM auth subrequest (/validate)
+# with 200 and a 'Username' header. Test use only.
+- name: Mock SRC-Nginx
+  hosts: localhost
+  connection: local
+  become: true
+  tasks:
+    - name: Nginx directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [/etc/nginx/sites-enabled, /etc/nginx/app-location-conf.d]
+
+    # written before installing nginx: the package's default site listens on IPv6 as well,
+    # which fails in containers without IPv6
+    - name: Server block like SRC-Nginx (without TLS)
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-enabled/default
+        mode: "0644"
+        content: |
+          server {
+              listen 80 default_server;
+              server_name _;
+              location = /validate {
+                  internal;
+                  add_header Username "mock-sram-user";
+                  return 200;
+              }
+              location @custom_401 {
+                  return 302 /login-required;
+              }
+              include /etc/nginx/app-location-conf.d/*.conf;
+          }
+
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx
+        update_cache: true
+
+    - name: Start nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+        enabled: true

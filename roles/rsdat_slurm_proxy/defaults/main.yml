@@ -1,0 +1,10 @@
+---
+# Slurm REST API (slurmrestd) of the cluster the Dask workers run on, e.g.
+# https://slurm.snellius.surf.nl . Required.
+rsdat_slurm_api_url: ""
+# Slurm user name and token (scontrol token lifespan=...). Optional here: users can set
+# their own token on the workspace with 'rsdat-slurm-token'. Treat rsdat_slurm_jwt as a secret.
+rsdat_slurm_user: ""
+rsdat_slurm_jwt: ""
+# Slurm commands provided through the proxy
+rsdat_slurm_commands: [sbatch, squeue, sinfo, scontrol, scancel]

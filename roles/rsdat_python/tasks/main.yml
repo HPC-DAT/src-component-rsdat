@@ -1,0 +1,57 @@
+---
+- name: Install system packages
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-venv
+      - python3-dev
+      - build-essential
+      - git
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create RS-DAT user
+  ansible.builtin.user:
+    name: "{{ rsdat_user }}"
+    home: "{{ rsdat_home }}"
+    shell: /bin/bash
+    create_home: true
+    system: false
+
+- name: Create directory for the Python environment
+  ansible.builtin.file:
+    path: "{{ rsdat_venv | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Create virtual environment
+  ansible.builtin.command:
+    cmd: "python3 -m venv {{ rsdat_venv }}"
+    creates: "{{ rsdat_venv }}/bin/python"
+
+- name: Upgrade pip
+  ansible.builtin.pip:
+    name: pip
+    state: latest  # noqa package-latest
+    virtualenv: "{{ rsdat_venv }}"
+
+- name: Install RS-DAT Python packages
+  ansible.builtin.pip:
+    virtualenv: "{{ rsdat_venv }}"
+    name:
+      - "dask[distributed,diagnostics]=={{ rsdat_dask_version }}"
+      - "distributed=={{ rsdat_dask_version }}"
+      - "dask-jobqueue=={{ rsdat_dask_jobqueue_version }}"
+      - "jupyterlab=={{ rsdat_jupyterlab_version }}"
+      - "dask-labextension=={{ rsdat_dask_labextension_version }}"
+      - "jupyterlab-git=={{ rsdat_jupyterlab_git_version }}"
+      - jupyter-server-proxy
+      - "prefect=={{ rsdat_prefect_version }}"
+      - "{{ rsdat_slurm_proxy_pip_spec }}"
+
+- name: Install extra Python packages
+  when: rsdat_extra_pip_packages | length > 0
+  ansible.builtin.pip:
+    virtualenv: "{{ rsdat_venv }}"
+    name: "{{ rsdat_extra_pip_packages }}"
