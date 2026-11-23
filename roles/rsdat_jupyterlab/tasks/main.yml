@@ -6,6 +6,25 @@
       Set rsdat_dask_worker_python to the Python on the Slurm cluster that has
       dask/distributed {{ rsdat_dask_version }} installed.
 
+- name: Check worker network
+  when: rsdat_dask_worker_network | length > 0
+  ansible.builtin.assert:
+    that: rsdat_dask_worker_network is match('^([0-9]{1,3}[.]){3}[0-9]{1,3}/[0-9]{1,2}$')
+    fail_msg: "rsdat_dask_worker_network must be an IPv4 network in CIDR form, e.g. 145.136.56.0/21"
+
+- name: Find the Python environment's site-packages
+  ansible.builtin.command:
+    cmd: "{{ rsdat_venv }}/bin/python -c 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])'"
+  register: rsdat_site_packages
+  changed_when: false
+
+- name: Install rsdat_dask (RSDATSLURMCluster)
+  ansible.builtin.copy:
+    src: rsdat_dask.py
+    dest: "{{ rsdat_site_packages.stdout }}/rsdat_dask.py"
+    mode: "0644"
+  notify: Restart JupyterLab
+
 - name: Create configuration directories
   ansible.builtin.file:
     path: "{{ item }}"

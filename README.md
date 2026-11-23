@@ -43,8 +43,11 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_cores`, `rsdat_dask_processes`, `rsdat_dask_memory`, `rsdat_dask_walltime` | `1`, `1`, `4GiB`, `01:00:00` | Resources per worker job |
 | `rsdat_dask_job_extra_directives` | `[]` | Extra `#SBATCH` options, e.g. `["--constraint=a100"]` |
 | `rsdat_dask_log_directory`, `rsdat_dask_job_directory` | `""` | Directory on the cluster for worker logs, and the jobs' working directory |
+| `rsdat_dask_worker_network` | `""` | Network (CIDR) the workers listen on and advertise, e.g. `145.136.56.0/21` on Snellius. Each job picks its node's address in this network when it starts. See [Networking](#networking) |
+| `rsdat_dask_worker_port`, `rsdat_dask_nanny_port` | `40000:40099`, `40100:40199` | Fixed port ranges for workers and nannies, so the cluster firewall can allow them (`""` = random) |
 | `rsdat_dask_scheduler_port` | `8786` | Port the workers use to reach the scheduler on the workspace |
-| `rsdat_dask_contact_host` | `rsdat_fqdn` | Address the workers use to reach the workspace |
+| `rsdat_dask_scheduler_host` | `0.0.0.0` | Address the scheduler listens on: all interfaces, or the workspace's public IP |
+| `rsdat_dask_contact_host` | `rsdat_fqdn` | Host the workers use to reach the scheduler (`RSDATSLURMCluster` only; `""` = the scheduler's own address) |
 | `rsdat_fqdn` | the host's FQDN | Workspace host name |
 | `rsdat_dask_version` | `2026.8.0` | dask/distributed version, which must match the workers' environment |
 | `rsdat_slurm_proxy_pip_spec` | fork branch with the fixes | pip spec of the SLURM-CLI-API-Proxy client; pin to a tag or commit once merged upstream |
@@ -68,26 +71,35 @@ The token is stored in `~/.config/rsdat/slurm.env` and read on every Slurm comma
 **Dask.** In JupyterLab, open the Dask sidebar and click **New** to create a cluster, then **Scale** it. In a notebook:
 
 ```python
-from dask_jobqueue import SLURMCluster
+from rsdat_dask import RSDATSLURMCluster
 from distributed import Client
 
-cluster = SLURMCluster()        # defaults from the component parameters (/etc/dask/rsdat.yaml)
+cluster = RSDATSLURMCluster()   # defaults from the component parameters (/etc/dask/rsdat.yaml)
 cluster.scale(jobs=4)           # or cluster.adapt(maximum_jobs=10)
 client = Client(cluster)
 ```
 
-Any setting can be overridden per cluster, e.g. `SLURMCluster(cores=16, memory="32GiB", queue="genoa")`. `sbatch`, `squeue` and `scancel` also work in the JupyterLab terminal.
+`RSDATSLURMCluster` is dask-jobqueue's `SLURMCluster` with one difference: workers reach the scheduler at `rsdat_dask_contact_host` (see [Networking](#networking)). The Dask sidebar uses it too. Plain `SLURMCluster()` gets the same defaults, but gives the workers the scheduler's own listening address.
+
+Any setting can be overridden per cluster, e.g. `RSDATSLURMCluster(cores=16, memory="32GiB", queue="genoa")`. `sbatch`, `squeue` and `scancel` also work in the JupyterLab terminal.
 
 **Prefect.** The UI is at `https://<workspace>/prefect/`. Flows run from notebooks report to this server (`PREFECT_API_URL` is set in JupyterLab).
 
 ## Networking
 
-Dask needs connections in both directions between the workspace and the worker nodes:
+Dask connects in both directions between the scheduler (in JupyterLab on the workspace) and the workers (Slurm jobs on the compute nodes).
 
-- workers → scheduler: compute nodes must reach `rsdat_dask_contact_host:rsdat_dask_scheduler_port` (TCP 8786 by default). The workspace's security group must allow this from the cluster's address range.
-- scheduler (and notebook client) → workers: the workspace must reach the workers' ports on the compute nodes.
+**Workers → scheduler.** Workers connect to `rsdat_dask_contact_host:rsdat_dask_scheduler_port` (TCP 8786 by default). The workspace's security group must allow this port from the compute nodes' addresses.
+- The scheduler listens on `rsdat_dask_scheduler_host` (default all interfaces).
+- If the workspace's public IP is on one of its interfaces, the defaults are enough.
+- If the workspace has a private IP behind a floating/NAT address, set `rsdat_dask_contact_host` to the public name or IP. This needs `RSDATSLURMCluster`. dask-jobqueue always gives workers the scheduler's listening address, and distributed's `contact_address` option for the scheduler has no effect (checked with distributed 2026.8.0).
 
-Compute nodes are often not reachable from outside the cluster, so check this per cluster before relying on it. If direct connections aren't possible, use a tunnel or run the scheduler on the cluster (not part of this component yet).
+The worker's connection leaves the node via the node's routing, which Dask doesn't control. Check it on a compute node with `ip route get <workspace IP>`. On Snellius this goes out via the public VLAN (`src 145.136.x.x`).
+
+**Scheduler → workers.** The scheduler, and the notebook client, connect to the address each worker advertises. That's the node's default-route address unless `rsdat_dask_worker_network` is set. Compute nodes often have several networks (on Snellius: internal Ethernet 172.18.x, InfiniBand 172.22.x, and the public VLAN 145.136.56.0/21). Only the public one is reachable from the workspace.
+- With `rsdat_dask_worker_network: 145.136.56.0/21`, each job picks the node's address in that network when it starts and the worker listens on it (`--host`). The job stops with an error if the node has no such address.
+- The address is picked by network rather than interface name, because names differ per node type. On Snellius it's `ens4f0np0.136` on CPU nodes and `eno1np0.136` on `gpu_a100` nodes.
+- Workers and nannies use fixed port ranges (`40000:40099` and `40100:40199` by default). The cluster's firewall must allow the workspace to reach those ports on the worker network.
 
 The workspace talks to the Slurm REST API over HTTPS only. It needs no SSH access to the cluster.
 
@@ -112,6 +124,6 @@ The checks (`tests/check_workspace.sh`):
 - JupyterLab is reachable through nginx and has the Dask and git extensions.
 - The Prefect UI, its assets and the API work under `/prefect/`, and a flow runs against the server.
 - `sbatch`, `squeue` and `scancel` work through the REST API.
-- `SLURMCluster()` with the workspace defaults starts two workers on Slurm, computes a result and cancels the jobs on close.
+- `RSDATSLURMCluster()` with the workspace defaults starts two workers on Slurm. They connect through the contact host and listen in the worker network on the fixed port ranges. They compute a result and the jobs are cancelled on close.
 - The Dask extension creates a cluster.
 - A second playbook run changes nothing.

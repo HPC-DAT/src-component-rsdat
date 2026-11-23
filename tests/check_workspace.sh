@@ -47,24 +47,36 @@ check "sbatch/squeue/scancel through the REST API" as_user "bash /tmp/sbatch_che
 
 # Dask cluster with the workspace defaults (/etc/dask/rsdat.yaml), as in a notebook
 cat > /tmp/dask_check.py <<'PY'
-import time
-from dask_jobqueue import SLURMCluster
+import ipaddress, os
+from rsdat_dask import RSDATSLURMCluster
 from distributed import Client
 
-cluster = SLURMCluster()          # all settings from /etc/dask/rsdat.yaml
-print(cluster.job_script())
+cluster = RSDATSLURMCluster()     # all settings from /etc/dask/rsdat.yaml
+script = cluster.job_script()
+print(script)
+contact = os.environ.get("RSDAT_EXPECT_CONTACT_HOST")
+if contact:
+    assert f"tcp://{contact}:8786" in script, "workers don't get the contact host"
 cluster.scale(jobs=2)
 with Client(cluster) as client:
     client.wait_for_workers(2, timeout=240)
     total = client.submit(sum, client.map(lambda x: x * x, range(100))).result(timeout=60)
     assert total == sum(x * x for x in range(100)), total
-    print("workers:", list(client.scheduler_info()["workers"]))
+    workers = client.scheduler_info()["workers"]
+    print("workers:", list(workers))
+    net = os.environ.get("RSDAT_EXPECT_WORKER_NET")
+    if net:
+        for addr, info in workers.items():
+            host, port = addr.removeprefix("tcp://").rsplit(":", 1)
+            assert ipaddress.ip_address(host) in ipaddress.ip_network(net), f"{addr} not in {net}"
+            assert 40000 <= int(port) <= 40099, f"worker port {port} outside 40000:40099"
+            assert info["nanny"].rsplit(":", 1)[1].startswith("401"), info["nanny"]
     print("dashboard:", cluster.dashboard_link)
 cluster.close()
 print("OK")
 PY
 chmod 644 /tmp/dask_check.py
-check "Dask SLURMCluster with workspace defaults (2 workers on Slurm)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; cd ~ && timeout 300 python /tmp/dask_check.py"
+check "RSDATSLURMCluster with workspace defaults (2 workers on Slurm, worker network, contact host)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_EXPECT_WORKER_NET=${RSDAT_EXPECT_WORKER_NET:-} RSDAT_EXPECT_CONTACT_HOST=${RSDAT_EXPECT_CONTACT_HOST:-}; cd ~ && timeout 300 python /tmp/dask_check.py"
 check "Dask workers cancelled after close" as_user 'sleep 5; ! squeue | grep -q " R .*dask-wor\| PD .*dask-wor"'
 
 # Dask extension: create a cluster through the JupyterLab extension API (the "New" button)
@@ -89,6 +101,12 @@ echo "workers: $n"
 req -X DELETE "$api/$id"
 SH
 check "Dask extension: New cluster + scale to 1 worker on Slurm (labextension API)" bash /tmp/labext_check.sh
+
+# JupyterLab must also come back after a restart once kernels have run (~/.ipython exists),
+# e.g. after a workspace reboot
+as_user 'mkdir -p ~/.ipython'
+systemctl restart rsdat-jupyterlab
+check "JupyterLab comes back after a restart" wait_http http://localhost/jupyter/api/status
 
 if [ "$fail" = 0 ]; then echo "ALL CHECKS PASSED"; else echo "SOME CHECKS FAILED"; fi
 exit $fail
