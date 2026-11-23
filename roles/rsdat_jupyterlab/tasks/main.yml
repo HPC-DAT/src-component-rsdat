@@ -1,10 +1,11 @@
 ---
 - name: Check Dask worker settings
   ansible.builtin.assert:
-    that: rsdat_dask_worker_python | length > 0
+    that: (rsdat_dask_worker_image | length > 0) or (rsdat_dask_worker_python | length > 0)
     fail_msg: >-
-      Set rsdat_dask_worker_python to the Python on the Slurm cluster that has
-      dask/distributed {{ rsdat_dask_version }} installed.
+      Set rsdat_dask_worker_image (worker image built from worker-image/) or
+      rsdat_dask_worker_python (a Python on the cluster with the versions in
+      worker-image/requirements.txt).
 
 - name: Check worker network
   when: rsdat_dask_worker_network | length > 0
@@ -24,6 +25,42 @@
     dest: "{{ rsdat_site_packages.stdout }}/rsdat_dask.py"
     mode: "0644"
   notify: Restart JupyterLab
+
+- name: Install the Dask TLS certificate script
+  ansible.builtin.copy:
+    src: rsdat-dask-tls.sh
+    dest: /opt/rsdat/rsdat-dask-tls.sh
+    mode: "0755"
+
+- name: Dask TLS certificates (CA + scheduler/worker/client certificate)
+  when: rsdat_dask_tls | bool
+  ansible.builtin.command:
+    cmd: "/opt/rsdat/rsdat-dask-tls.sh {{ rsdat_dask_tls_dir }}"
+    creates: "{{ rsdat_dask_tls_dir }}/dask.pem"
+  notify: Restart JupyterLab
+
+- name: Dask TLS directories belong to the RS-DAT user
+  when: rsdat_dask_tls | bool
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ rsdat_user }}"
+    group: "{{ rsdat_user }}"
+    mode: "{{ '0755' if item == rsdat_home ~ '/.config' else '0700' }}"
+  # only directories inside the RS-DAT user's home (default: ~/.config/rsdat/dask-tls)
+  loop: >-
+    {{ ([rsdat_home ~ '/.config', rsdat_home ~ '/.config/rsdat']
+        if rsdat_dask_tls_dir.startswith(rsdat_home ~ '/.config/rsdat/') else [])
+       + [rsdat_dask_tls_dir] }}
+
+- name: Dask TLS files owned by the RS-DAT user
+  when: rsdat_dask_tls | bool
+  ansible.builtin.file:
+    path: "{{ rsdat_dask_tls_dir }}/{{ item }}"
+    owner: "{{ rsdat_user }}"
+    group: "{{ rsdat_user }}"
+    mode: "0600"
+  loop: [ca.pem, dask.pem, dask.key]
 
 - name: Create configuration directories
   ansible.builtin.file:

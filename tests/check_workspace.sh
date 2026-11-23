@@ -53,10 +53,12 @@ from distributed import Client
 
 cluster = RSDATSLURMCluster()     # all settings from /etc/dask/rsdat.yaml
 script = cluster.job_script()
-print(script)
+print("\n".join(l for l in script.splitlines() if "PRIVATE KEY" not in l))
+assert cluster.scheduler.address.startswith("tls://"), "TLS should be on by default"
+assert script.count("-----BEGIN") == 3, "certificates should be in the job script"
 contact = os.environ.get("RSDAT_EXPECT_CONTACT_HOST")
 if contact:
-    assert f"tcp://{contact}:8786" in script, "workers don't get the contact host"
+    assert f"tls://{contact}:8786" in script, "workers don't get the contact host"
 cluster.scale(jobs=2)
 with Client(cluster) as client:
     client.wait_for_workers(2, timeout=240)
@@ -67,11 +69,21 @@ with Client(cluster) as client:
     net = os.environ.get("RSDAT_EXPECT_WORKER_NET")
     if net:
         for addr, info in workers.items():
-            host, port = addr.removeprefix("tcp://").rsplit(":", 1)
+            assert addr.startswith("tls://"), addr
+            host, port = addr.removeprefix("tls://").rsplit(":", 1)
             assert ipaddress.ip_address(host) in ipaddress.ip_network(net), f"{addr} not in {net}"
             assert 40000 <= int(port) <= 40099, f"worker port {port} outside 40000:40099"
             assert info["nanny"].rsplit(":", 1)[1].startswith("401"), info["nanny"]
     print("dashboard:", cluster.dashboard_link)
+    # a client that only knows the address (the Dask sidebar's snippet) uses the TLS config
+    with Client(cluster.scheduler.address, timeout=20) as c2:
+        assert c2.submit(lambda: 42).result(timeout=60) == 42
+    # plain tcp is refused
+    try:
+        Client(cluster.scheduler.address.replace("tls://", "tcp://"), timeout=5)
+        raise AssertionError("plain tcp:// client was accepted")
+    except (OSError, RuntimeError, TimeoutError):
+        pass
 cluster.close()
 print("OK")
 PY

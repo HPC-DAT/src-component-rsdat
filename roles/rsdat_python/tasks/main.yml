@@ -30,18 +30,38 @@
     cmd: "python3 -m venv {{ rsdat_venv }}"
     creates: "{{ rsdat_venv }}/bin/python"
 
+- name: Check the Python version of the environment
+  ansible.builtin.command:
+    cmd: "{{ rsdat_venv }}/bin/python -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])'"
+  register: rsdat_venv_python
+  changed_when: false
+
+- name: Stop if the workspace Python differs from the workers'
+  ansible.builtin.assert:
+    that: rsdat_venv_python.stdout == rsdat_dask_python_version
+    fail_msg: >-
+      The workspace environment uses Python {{ rsdat_venv_python.stdout }}, but the Dask workers
+      use {{ rsdat_dask_python_version }} (rsdat_dask_python_version / worker-image/worker.def).
+      Functions sent to the workers (cloudpickle) break when these differ. Use Ubuntu 24.04
+      (Python 3.12), or build a worker image with this Python version and set
+      rsdat_dask_python_version accordingly.
+
 - name: Upgrade pip
   ansible.builtin.pip:
     name: pip
     state: latest  # noqa package-latest
     virtualenv: "{{ rsdat_venv }}"
 
+- name: Packages shared with the Dask workers (same versions as the worker image)
+  ansible.builtin.pip:
+    virtualenv: "{{ rsdat_venv }}"
+    requirements: "{{ rsdat_shared_requirements }}"
+
 - name: Install RS-DAT Python packages
   ansible.builtin.pip:
     virtualenv: "{{ rsdat_venv }}"
     name:
-      - "dask[distributed,diagnostics]=={{ rsdat_dask_version }}"
-      - "distributed=={{ rsdat_dask_version }}"
+      - bokeh  # Dask dashboard
       - "dask-jobqueue=={{ rsdat_dask_jobqueue_version }}"
       - "jupyterlab=={{ rsdat_jupyterlab_version }}"
       - "dask-labextension=={{ rsdat_dask_labextension_version }}"
@@ -49,9 +69,12 @@
       - jupyter-server-proxy
       - "prefect=={{ rsdat_prefect_version }}"
       - "{{ rsdat_slurm_proxy_pip_spec }}"
+    # keep the shared versions: fail rather than upgrade them
+    extra_args: "-c {{ rsdat_shared_requirements }}"
 
 - name: Install extra Python packages
   when: rsdat_extra_pip_packages | length > 0
   ansible.builtin.pip:
     virtualenv: "{{ rsdat_venv }}"
     name: "{{ rsdat_extra_pip_packages }}"
+    extra_args: "-c {{ rsdat_shared_requirements }}"

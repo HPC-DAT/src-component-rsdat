@@ -1,0 +1,28 @@
+# Apptainer image for the RS-DAT Dask workers on the Slurm cluster.
+# Built and pushed by .github/workflows/worker-image.yml (based on RS-DAT/JDS_development_template).
+#
+# The Python minor version must equal the workspace's (Ubuntu 24.04: 3.12; checked in the
+# workflow against rsdat_dask_python_version), and worker-image/requirements.txt is shared with
+# the workspace environment, so both sides run identical Dask/serialization versions.
+#
+#   apptainer build rsdat-worker.sif worker-image/worker.def     (from the repository root)
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+%files
+    worker-image/requirements.txt /opt/rsdat/requirements.txt
+
+%post
+    python -m venv /opt/venv
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv/bin/pip install --no-cache-dir -r /opt/rsdat/requirements.txt
+
+%environment
+    export PATH="/opt/venv/bin:${PATH}"
+
+%runscript
+    exec /opt/venv/bin/python "$@"
+
+%labels
+    org.opencontainers.image.source https://github.com/HPC-DAT/src-component-rsdat
+    org.opencontainers.image.description RS-DAT Dask worker environment

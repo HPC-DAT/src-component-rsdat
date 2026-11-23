@@ -1,7 +1,12 @@
 ---
-# Versions. Dask and distributed MUST match the versions in the worker environment on the Slurm
-# cluster (rsdat_dask_worker_python), or the workers can't talk to the scheduler.
-rsdat_dask_version: "2026.8.0"
+# Python minor version of the workspace environment. Must equal the workers' (cloudpickle):
+# the worker image (worker-image/worker.def) uses the same; the playbook stops if they differ.
+rsdat_dask_python_version: "3.12"
+
+# Dask, distributed and the serialization libraries are pinned in worker-image/requirements.txt,
+# which the worker image installs as well, so both sides run identical versions.
+rsdat_shared_requirements: "{{ playbook_dir }}/worker-image/requirements.txt"
+
 rsdat_dask_jobqueue_version: "0.9.0"
 rsdat_jupyterlab_version: "4.6.4"
 rsdat_dask_labextension_version: "7.0.0"

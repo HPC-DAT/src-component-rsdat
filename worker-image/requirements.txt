@@ -1,0 +1,17 @@
+# Packages that must be identical on the workspace (scheduler, notebook client) and the Dask
+# workers: Dask sends functions and data between them with cloudpickle/msgpack, so versions
+# (and the Python minor version, see worker.def) have to match.
+#
+# Both sides install from this file:
+#   - the playbook, into the workspace environment (/opt/rsdat/venv)
+#   - worker-image/worker.def, into the worker image (built by .github/workflows/worker-image.yml)
+# Add packages your notebooks AND workers need below, with exact versions (==).
+dask==2026.8.0
+distributed==2026.8.0
+cloudpickle==3.1.3
+msgpack==1.2.4
+tornado==6.6.1
+toolz==1.2.0
+numpy==2.5.5
+# TLS between scheduler and workers
+cryptography==50.0.2
