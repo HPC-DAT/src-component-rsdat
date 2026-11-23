@@ -15,6 +15,9 @@
 {% set prologue = ['mkdir -p "' ~ rsdat_dask_log_directory ~ '" && exec >>"' ~ rsdat_dask_log_directory ~ '/${SLURM_JOB_NAME:-dask-worker}-${SLURM_JOB_ID}.log" 2>&1'] + prologue %}
 {% set directives = ['--output=/dev/null'] + directives %}
 {% endif %}
+{#  Jobs submitted through the REST API don't get HOME (slurmd doesn't set it); the log
+    directory, Apptainer's cache and Python's user paths need it. #}
+{% set prologue = ['export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"'] + prologue %}
 {% if rsdat_dask_worker_python | length > 0 %}
 {%   set worker_python = rsdat_dask_worker_python %}
 {% else %}
