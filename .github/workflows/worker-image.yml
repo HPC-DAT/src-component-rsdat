@@ -12,7 +12,9 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned: Apptainer's standard .deb needs libfuse3-3, which ubuntu-latest (26.04) no
+    # longer has (it ships libfuse3-4)
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -30,6 +32,8 @@ jobs:
 
       - name: Set up Apptainer
         uses: eWaterCycle/setup-apptainer@v2
+        with:
+          apptainer-version: 1.4.5
 
       - name: Build image
         run: apptainer build worker.sif worker-image/worker.def
