@@ -2,8 +2,11 @@
 # Shared settings for all roles. Each can be passed as a Research Cloud component parameter
 # (extra var). Role-specific settings are in roles/<role>/defaults/main.yml.
 
-# Host name users reach the workspace by; also the address Dask workers use to reach the scheduler
-rsdat_fqdn: "{{ ansible_facts['fqdn'] }}"
+# Host name users reach the workspace by; also the default host Dask workers use to reach the
+# scheduler. Research Cloud passes the workspace's public name as 'workspace_fqdn'
+# (e.g. daskprefectsrv.advisorssrcdemo.src.surf-hosted.nl). Set rsdat_fqdn to override;
+# without either, the VM's own FQDN is used (may be an internal name).
+rsdat_fqdn: "{{ workspace_fqdn | default(ansible_facts['fqdn'], true) }}"
 
 # Unix user that runs JupyterLab and Prefect (created if missing). All CO members share this
 # JupyterLab; access is controlled by SRAM in SRC-Nginx.

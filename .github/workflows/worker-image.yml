@@ -1,0 +1,57 @@
+# Build the Dask worker image (worker-image/worker.def) and push it to the GitHub Container
+# Registry as oras://ghcr.io/<owner>/<repo>-worker:<tag>. Based on RS-DAT/JDS_development_template.
+name: Worker image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - worker-image/**
+      - .github/workflows/worker-image.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The workers must run the workspace's Python minor version (cloudpickle)
+      - name: Check Python version matches the workspace
+        run: |
+          want=$(sed -nE 's/^rsdat_dask_python_version: *"?([0-9.]+)"?.*/\1/p' roles/rsdat_python/defaults/main.yml)
+          have=$(sed -nE 's/^From: *python:([0-9]+\.[0-9]+).*/\1/p' worker-image/worker.def)
+          echo "workspace: $want, image: $have"
+          test -n "$want" && test "$want" = "$have"
+
+      - name: Set up Apptainer
+        uses: eWaterCycle/setup-apptainer@v2
+
+      - name: Build image
+        run: apptainer build worker.sif worker-image/worker.def
+
+      - name: Check the image's Dask versions
+        run: |
+          apptainer exec worker.sif python -c "import sys, dask, distributed; print(sys.version); print(dask.__version__, distributed.__version__)"
+          apptainer exec worker.sif pip freeze > image-freeze.txt
+          grep -vE '^\s*(#|$)' worker-image/requirements.txt | while read -r req; do
+            grep -qixF "$req" image-freeze.txt || { echo "missing in image: $req"; exit 1; }
+          done
+
+      # registry names must be lower case
+      - name: Image name
+        run: |
+          echo "IMAGE=oras://ghcr.io/${GITHUB_REPOSITORY,,}-worker" >> "$GITHUB_ENV"
+          echo "DASK_VERSION=$(sed -nE 's/^dask==(.+)/\1/p' worker-image/requirements.txt)" >> "$GITHUB_ENV"
+
+      - name: Push to ghcr.io
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | apptainer remote login -u "${{ github.actor }}" --password-stdin oras://ghcr.io
+          apptainer push worker.sif "${IMAGE}:${DASK_VERSION}"
+          apptainer push worker.sif "${IMAGE}:${GITHUB_SHA::7}"
+          apptainer push worker.sif "${IMAGE}:latest"

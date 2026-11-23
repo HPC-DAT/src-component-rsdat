@@ -44,6 +44,9 @@ else
     CONTACT_HOST="$WS"
 fi
 
+# the Dask workers (in the Slurm container) must listen on this network
+WORKER_NET="$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET")"
+
 echo -n "Waiting for Slurm"
 for _ in $(seq 60); do docker exec "$SLURM" scontrol ping 2>/dev/null | grep -q UP && break; echo -n .; sleep 2; done; echo
 TOKEN="$(docker exec "$SLURM" scontrol token username=testuser lifespan=7200 | cut -d= -f2)"
@@ -71,6 +74,7 @@ rsdat_dask_memory: 500MiB
 rsdat_dask_walltime: "00:15:00"
 rsdat_dask_job_directory: /tmp
 rsdat_dask_contact_host: "$CONTACT_HOST"
+rsdat_dask_worker_network: "$WORKER_NET"
 VARS
 docker cp /tmp/rsdat-test-vars.$$.yml "$WS":/opt/src-component-rsdat/tests/test-vars.yml
 rm -f /tmp/rsdat-test-vars.$$.yml
@@ -80,4 +84,5 @@ run_playbook rsdat.yml -e @tests/test-vars.yml | tee /tmp/rsdat-second-run.log |
 grep -q "changed=0" /tmp/rsdat-second-run.log && echo "PASS idempotent" || { echo "FAIL second run changed something"; exit 1; }
 
 echo "== checks"
-docker exec "$WS" bash /opt/src-component-rsdat/tests/check_workspace.sh
+docker exec -e RSDAT_EXPECT_WORKER_NET="$WORKER_NET" -e RSDAT_EXPECT_CONTACT_HOST="$CONTACT_HOST" \
+    "$WS" bash /opt/src-component-rsdat/tests/check_workspace.sh

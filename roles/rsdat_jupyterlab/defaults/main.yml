@@ -4,8 +4,16 @@ rsdat_jupyterlab_root_dir: "{{ rsdat_home }}"
 
 # --- Dask workers on Slurm (defaults for the Dask extension's "New" cluster button and for
 # dask_jobqueue.SLURMCluster() in notebooks; both can be overridden per cluster) ---
-# Python on the Slurm cluster with the SAME dask/distributed version as rsdat_dask_version. Required.
+# Worker environment on the cluster. Either:
+# - rsdat_dask_worker_image: the worker image built from worker-image/ (same versions as this
+#   workspace), e.g. "oras://ghcr.io/hpc-dat/src-component-rsdat-worker:2026.8.0" (compute nodes
+#   need registry access) or a .sif file on the cluster ("apptainer pull" it on a login node), or
+# - rsdat_dask_worker_python: a Python on the cluster with exactly the versions in
+#   worker-image/requirements.txt and Python rsdat_dask_python_version.
+rsdat_dask_worker_image: ""
 rsdat_dask_worker_python: ""
+# Extra 'apptainer exec' options, e.g. ["--nv"] for GPUs
+rsdat_dask_worker_apptainer_args: []
 # Shell lines run in the worker job before the worker starts (e.g. module load, source venv)
 rsdat_dask_job_script_prologue: []
 rsdat_dask_queue: ""        # Slurm partition
@@ -20,10 +28,34 @@ rsdat_dask_job_extra_directives: []
 rsdat_dask_log_directory: ""
 # Working directory of the worker jobs on the cluster ("" = home of the Slurm user)
 rsdat_dask_job_directory: ""
+# Directory ON THE NODE where workers spill data and keep temporary files. Default: the job's
+# node-local scratch ($TMPDIR on Snellius/Spider), else /tmp. Avoid the home/project filesystem:
+# spilling there is slow and uses up the quota.
+rsdat_dask_local_directory: "${TMPDIR:-/tmp}"
 
-# Scheduler (runs in JupyterLab on this workspace). Workers on the cluster must be able to
-# reach rsdat_dask_contact_host:rsdat_dask_scheduler_port, and the scheduler must be able to
-# reach the workers (see README, "Networking").
+# --- Networking between the scheduler (in JupyterLab on this workspace) and the workers on
+# the cluster; Dask connects in both directions (see README, "Networking") ---
+# Scheduler port; the workspace firewall/security group must allow it from the worker network.
 rsdat_dask_scheduler_port: 8786
+# Address the scheduler listens on: "0.0.0.0" (all interfaces) or the workspace's public IP
+rsdat_dask_scheduler_host: "0.0.0.0"
+# Host the workers use to reach the scheduler (needs RSDATSLURMCluster, the Dask extension's
+# default). "" = the address the scheduler listens on.
 rsdat_dask_contact_host: "{{ rsdat_fqdn }}"
 rsdat_dask_dashboard_port: 8787
+
+# TLS between scheduler, workers and clients (recommended: anyone who can connect to a Dask
+# scheduler or worker can run code there). The workspace gets its own CA and certificate in
+# rsdat_dask_tls_dir; workers receive them in the job script. Requires RSDATSLURMCluster.
+rsdat_dask_tls: true
+rsdat_dask_tls_dir: "{{ rsdat_home }}/.config/rsdat/dask-tls"
+
+# Network (CIDR) the workers must listen on and advertise, i.e. the compute nodes' addresses
+# that the workspace can reach, e.g. "145.136.56.0/21" on Snellius. Interface names differ
+# between node types, so the address is chosen by network when the job starts.
+# "" = Dask's default (the interface of the node's default route).
+rsdat_dask_worker_network: ""
+# Fixed port ranges for workers and nannies, so the cluster firewall can allow the workspace to
+# reach them ("" = random ports)
+rsdat_dask_worker_port: "40000:40099"
+rsdat_dask_nanny_port: "40100:40199"
