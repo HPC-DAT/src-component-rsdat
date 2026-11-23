@@ -47,18 +47,37 @@ check "sbatch/squeue/scancel through the REST API" as_user "bash /tmp/sbatch_che
 
 # Dask cluster with the workspace defaults (/etc/dask/rsdat.yaml), as in a notebook
 cat > /tmp/dask_check.py <<'PY'
-import ipaddress, os
+import ipaddress, os, urllib.request
 from rsdat_dask import RSDATSLURMCluster
 from distributed import Client
+
+on_cluster = os.environ.get("RSDAT_EXPECT_SCHEDULER") == "cluster"
+net = os.environ.get("RSDAT_EXPECT_WORKER_NET")
+
+def in_net(addr):
+    host, port = addr.removeprefix("tls://").rsplit(":", 1)
+    assert ipaddress.ip_address(host) in ipaddress.ip_network(net), f"{addr} not in {net}"
+    return int(port)
 
 cluster = RSDATSLURMCluster()     # all settings from /etc/dask/rsdat.yaml
 script = cluster.job_script()
 print("\n".join(l for l in script.splitlines() if "PRIVATE KEY" not in l))
-assert cluster.scheduler.address.startswith("tls://"), "TLS should be on by default"
+print("scheduler:", cluster.scheduler_address)
+assert cluster.scheduler_address.startswith("tls://"), "TLS should be on by default"
 assert script.count("-----BEGIN") == 3, "certificates should be in the job script"
-contact = os.environ.get("RSDAT_EXPECT_CONTACT_HOST")
-if contact:
-    assert f"tls://{contact}:8786" in script, "workers don't get the contact host"
+if on_cluster:
+    # scheduler job on the cluster: this workspace reaches it through the tunnel on 127.0.0.1,
+    # the workers at its address in the cluster
+    assert cluster.scheduler_address.startswith("tls://127.0.0.1:"), cluster.scheduler_address
+    contact = cluster.scheduler.contact_address
+    print("scheduler in the cluster:", contact)
+    if net:
+        in_net(contact)
+    assert contact in script, "workers don't get the scheduler's address in the cluster"
+else:
+    contact = os.environ.get("RSDAT_EXPECT_CONTACT_HOST")
+    if contact:
+        assert f"tls://{contact}:8786" in script, "workers don't get the contact host"
 cluster.scale(jobs=2)
 with Client(cluster) as client:
     client.wait_for_workers(2, timeout=240)
@@ -66,21 +85,28 @@ with Client(cluster) as client:
     assert total == sum(x * x for x in range(100)), total
     workers = client.scheduler_info()["workers"]
     print("workers:", list(workers))
-    net = os.environ.get("RSDAT_EXPECT_WORKER_NET")
     if net:
         for addr, info in workers.items():
             assert addr.startswith("tls://"), addr
-            host, port = addr.removeprefix("tls://").rsplit(":", 1)
-            assert ipaddress.ip_address(host) in ipaddress.ip_network(net), f"{addr} not in {net}"
-            assert 40000 <= int(port) <= 40099, f"worker port {port} outside 40000:40099"
+            port = in_net(addr)
+            assert 40000 <= port <= 40099, f"worker port {port} outside 40000:40099"
             assert info["nanny"].rsplit(":", 1)[1].startswith("401"), info["nanny"]
+    # the scheduler can reach the nannies (restart) and results reach this notebook
+    client.restart()
+    client.wait_for_workers(2, timeout=120)
+    assert client.submit(lambda: 7).result(timeout=60) == 7
     print("dashboard:", cluster.dashboard_link)
+    if on_cluster:
+        port = cluster.scheduler.dashboard_port
+        assert port and f"/proxy/{port}/" in cluster.dashboard_link, cluster.dashboard_link
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=20) as r:
+            assert r.status == 200, r.status
     # a client that only knows the address (the Dask sidebar's snippet) uses the TLS config
-    with Client(cluster.scheduler.address, timeout=20) as c2:
+    with Client(cluster.scheduler_address, timeout=20) as c2:
         assert c2.submit(lambda: 42).result(timeout=60) == 42
     # plain tcp is refused
     try:
-        Client(cluster.scheduler.address.replace("tls://", "tcp://"), timeout=5)
+        Client(cluster.scheduler_address.replace("tls://", "tcp://"), timeout=5)
         raise AssertionError("plain tcp:// client was accepted")
     except (OSError, RuntimeError, TimeoutError):
         pass
@@ -88,8 +114,8 @@ cluster.close()
 print("OK")
 PY
 chmod 644 /tmp/dask_check.py
-check "RSDATSLURMCluster with workspace defaults (2 workers on Slurm, worker network, contact host)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_EXPECT_WORKER_NET=${RSDAT_EXPECT_WORKER_NET:-} RSDAT_EXPECT_CONTACT_HOST=${RSDAT_EXPECT_CONTACT_HOST:-}; cd ~ && timeout 300 python /tmp/dask_check.py"
-check "Dask workers cancelled after close" as_user 'sleep 5; ! squeue | grep -q " R .*dask-wor\| PD .*dask-wor"'
+check "RSDATSLURMCluster with workspace defaults (scheduler on the ${RSDAT_EXPECT_SCHEDULER:-workspace}, 2 workers, worker network, restart, dashboard)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_EXPECT_WORKER_NET=${RSDAT_EXPECT_WORKER_NET:-} RSDAT_EXPECT_CONTACT_HOST=${RSDAT_EXPECT_CONTACT_HOST:-} RSDAT_EXPECT_SCHEDULER=${RSDAT_EXPECT_SCHEDULER:-}; cd ~ && timeout 420 python /tmp/dask_check.py"
+check "Dask jobs (workers, scheduler) cancelled after close" as_user 'sleep 5; ! squeue | grep -q " R .*dask-\| PD .*dask-"'
 
 # Dask extension: create a cluster through the JupyterLab extension API (the "New" button)
 cat > /tmp/labext_check.sh <<'SH'

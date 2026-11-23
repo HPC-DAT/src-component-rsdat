@@ -67,9 +67,27 @@ jobqueue:
       dashboard_address: "127.0.0.1:{{ rsdat_dask_dashboard_port }}"
 
 rsdat:
-  # Host the workers use to reach the scheduler (used by rsdat_dask.RSDATSLURMCluster;
-  # distributed's own contact_address option has no effect)
+  # where RSDATSLURMCluster runs the scheduler: "cluster" (Slurm job + SSH tunnel) or "workspace"
+  scheduler-location: {{ rsdat_dask_scheduler_location | to_json }}
+{% if rsdat_dask_scheduler_location == 'cluster' %}
+  scheduler:
+    cores: {{ rsdat_dask_scheduler_cores }}
+    memory: "{{ rsdat_dask_scheduler_memory }}"
+    walltime: "{{ rsdat_dask_scheduler_walltime }}"
+    job-extra-directives: {{ ((['--output=/dev/null'] if rsdat_dask_log_directory | length > 0 else []) + (rsdat_dask_scheduler_job_extra_directives | list)) | to_json }}
+    start-timeout: {{ rsdat_dask_scheduler_start_timeout }}
+    tunnel-give-up: {{ rsdat_dask_tunnel_give_up }}
+  tunnel:
+    host: {{ rsdat_dask_tunnel_host | to_json }}
+    port: {{ rsdat_dask_tunnel_port }}
+    user: {{ rsdat_user | to_json }}
+    key-file: {{ (rsdat_dask_tunnel_dir ~ '/id_ed25519') | to_json }}
+    host-key-file: {{ rsdat_dask_tunnel_host_key | to_json }}
+{% else %}
+  # Host the workers use to reach the scheduler (distributed's own contact_address option
+  # has no effect)
   scheduler-contact-host: {{ (rsdat_dask_contact_host | to_json) if rsdat_dask_contact_host else 'null' }}
+{% endif %}
 
 distributed:
   dashboard:
