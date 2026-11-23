@@ -86,3 +86,8 @@ grep -q "changed=0" /tmp/rsdat-second-run.log && echo "PASS idempotent" || { ech
 echo "== checks"
 docker exec -e RSDAT_EXPECT_WORKER_NET="$WORKER_NET" -e RSDAT_EXPECT_CONTACT_HOST="$CONTACT_HOST" \
     "$WS" bash /opt/src-component-rsdat/tests/check_workspace.sh
+if docker exec "$SLURM" sh -c 'grep -l "Starting Worker" /home/testuser/.rsdat/dask-logs/*.log' >/dev/null 2>&1; then
+    echo "PASS worker job logs in ~/.rsdat/dask-logs on the cluster (created by the job)"
+else
+    echo "FAIL no worker job logs in ~/.rsdat/dask-logs on the cluster"; exit 1
+fi

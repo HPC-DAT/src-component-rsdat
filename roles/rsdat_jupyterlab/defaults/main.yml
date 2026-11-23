@@ -24,9 +24,12 @@ rsdat_dask_memory: "4GiB"   # memory per job
 rsdat_dask_walltime: "01:00:00"
 # Extra #SBATCH directives, e.g. ["--constraint=a100"]
 rsdat_dask_job_extra_directives: []
-# Directory ON THE CLUSTER for worker job logs ("" = job's working directory)
-rsdat_dask_log_directory: ""
-# Working directory of the worker jobs on the cluster ("" = home of the Slurm user)
+# Directory ON THE CLUSTER for worker job logs, created by the job; expanded on the node, so
+# $HOME is the Slurm user's home. One file per job: <job name>-<job id>.log.
+# "" = Slurm's default (slurm-<id>.out in the job's working directory).
+rsdat_dask_log_directory: "$HOME/.rsdat/dask-logs"
+# Working directory of the worker jobs on the cluster, created by the job if missing
+# ("" = home of the Slurm user)
 rsdat_dask_job_directory: ""
 # Directory ON THE NODE where workers spill data and keep temporary files. Default: the job's
 # node-local scratch ($TMPDIR on Snellius/Spider), else /tmp. Avoid the home/project filesystem:

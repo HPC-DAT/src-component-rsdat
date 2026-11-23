@@ -46,7 +46,8 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_queue`, `rsdat_dask_account` | `""` | Slurm partition and account (budget) |
 | `rsdat_dask_cores`, `rsdat_dask_processes`, `rsdat_dask_memory`, `rsdat_dask_walltime` | `1`, `1`, `4GiB`, `01:00:00` | Resources per worker job |
 | `rsdat_dask_job_extra_directives` | `[]` | Extra `#SBATCH` options, e.g. `["--constraint=a100"]` |
-| `rsdat_dask_log_directory`, `rsdat_dask_job_directory` | `""` | Directory on the cluster for worker logs, and the jobs' working directory |
+| `rsdat_dask_log_directory` | `$HOME/.rsdat/dask-logs` | Directory on the cluster for worker logs, one file per job. The job creates it, so nothing needs to be set up on the cluster |
+| `rsdat_dask_job_directory` | `""` (Slurm user's home) | Working directory of the worker jobs on the cluster, created by the job if missing |
 | `rsdat_dask_worker_network` | `""` | Network (CIDR) the workers listen on and advertise, e.g. `145.136.56.0/21` on Snellius. Each job picks its node's address in this network when it starts. See [Networking](#networking) |
 | `rsdat_dask_worker_port`, `rsdat_dask_nanny_port` | `40000:40099`, `40100:40199` | Fixed port ranges for workers and nannies, so the cluster firewall can allow them (`""` = random) |
 | `rsdat_dask_scheduler_port` | `8786` | Port the workers use to reach the scheduler on the workspace |

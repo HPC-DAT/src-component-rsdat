@@ -3,10 +3,18 @@
 # Workers are submitted with sbatch and stopped with scancel from {{ rsdat_slurm_bin }},
 # i.e. through the Slurm REST API.
 {% set prologue = rsdat_dask_job_script_prologue | list %}
-{% if rsdat_dask_job_directory | length > 0 %}
-{% set prologue = ['cd ' ~ rsdat_dask_job_directory] + prologue %}
-{% endif %}
 {% set directives = rsdat_dask_job_extra_directives | list %}
+{% if rsdat_dask_job_directory | length > 0 %}
+{% set prologue = ['mkdir -p "' ~ rsdat_dask_job_directory ~ '" && cd "' ~ rsdat_dask_job_directory ~ '"'] + prologue %}
+{% endif %}
+{#  Job logs: written by the job itself, which creates the directory on the cluster first.
+    (dask-jobqueue's log-directory would create the directory on this workspace instead, and
+    Slurm doesn't create the directory for #SBATCH --output.) Errors before this line, which
+    are only in the #SBATCH header, show in squeue. #}
+{% if rsdat_dask_log_directory | length > 0 %}
+{% set prologue = ['mkdir -p "' ~ rsdat_dask_log_directory ~ '" && exec >>"' ~ rsdat_dask_log_directory ~ '/${SLURM_JOB_NAME:-dask-worker}-${SLURM_JOB_ID}.log" 2>&1'] + prologue %}
+{% set directives = ['--output=/dev/null'] + directives %}
+{% endif %}
 {% if rsdat_dask_worker_python | length > 0 %}
 {%   set worker_python = rsdat_dask_worker_python %}
 {% else %}
@@ -46,7 +54,7 @@ jobqueue:
     python: {{ worker_python | to_json }}
     job-script-prologue: {{ prologue | to_json }}
     job-extra-directives: {{ directives | to_json }}
-    log-directory: {{ (rsdat_dask_log_directory | to_json) if rsdat_dask_log_directory else 'null' }}
+    log-directory: null
     # expanded on the node when the job starts (node-local scratch)
     local-directory: {{ (rsdat_dask_local_directory | to_json) if rsdat_dask_local_directory else 'null' }}
     worker-extra-args: {{ worker_args | to_json }}
