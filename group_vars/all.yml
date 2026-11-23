@@ -19,6 +19,10 @@ rsdat_venv: /opt/rsdat/venv
 rsdat_slurm_bin: /opt/rsdat/slurm-bin
 rsdat_config_dir: /etc/rsdat
 
+# Publish JupyterLab and Prefect through SRC-Nginx (SRAM login). false is for testing on a VM
+# without SRC-Nginx only: both then listen on 127.0.0.1 and are reached through an SSH tunnel.
+rsdat_nginx_enabled: true
+
 # URL paths behind SRC-Nginx
 rsdat_jupyterlab_path: /jupyter/
 rsdat_prefect_path: /prefect/

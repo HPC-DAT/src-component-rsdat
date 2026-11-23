@@ -14,4 +14,6 @@ c.IdentityProvider.token = ""
 c.PasswordIdentityProvider.hashed_password = ""
 c.PasswordIdentityProvider.password_required = False
 # Requests come from https://{{ rsdat_fqdn }} through nginx
+{% if rsdat_nginx_enabled | bool %}
 c.ServerApp.allow_origin = "https://{{ rsdat_fqdn }}"
+{% endif %}

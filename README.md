@@ -57,11 +57,21 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_python_version` | `3.12` | Python minor version of workspace and workers; the playbook stops if the workspace's differs |
 | `rsdat_slurm_proxy_pip_spec` | fork branch with the fixes | pip spec of the SLURM-CLI-API-Proxy client; pin to a tag or commit once merged upstream |
 | `rsdat_extra_pip_packages` | `[]` | Extra Python packages for the notebooks only. Packages the workers need too go in `worker-image/requirements.txt` |
+| `rsdat_nginx_enabled` | `true` | Publish JupyterLab and Prefect through SRC-Nginx. `false` is for testing on a VM without SRC-Nginx only, see below |
 | `rsdat_prefect_enabled` | `true` | Install and run the Prefect server |
 | `rsdat_nginx_root_redirect` | `false` | Redirect `/` to JupyterLab (only if no other component serves `/`) |
 | `rsdat_user` | `rsdat` | Unix user that runs JupyterLab and Prefect |
 
 Dask, distributed and the serialization libraries are pinned in `worker-image/requirements.txt`, which the workspace and the worker image both install. Other versions and settings are in `group_vars/all.yml` and `roles/*/defaults/main.yml`.
+
+**Testing on a VM without SRC-Nginx.** Run the playbook with `-e rsdat_nginx_enabled=false`. JupyterLab and Prefect then listen on `127.0.0.1` only, and you reach them through an SSH tunnel:
+
+```bash
+ssh -L 8888:127.0.0.1:8888 -L 4200:127.0.0.1:4200 <user>@<workspace>
+# http://localhost:8888/jupyter/   and   http://localhost:4200/prefect/
+```
+
+JupyterLab has no login of its own, so anyone with a shell on the VM can use it as `rsdat`. Don't use this for a shared workspace.
 
 ## Using it
 

@@ -22,3 +22,4 @@
     - role: rsdat_prefect
       when: rsdat_prefect_enabled | default(true) | bool
     - role: rsdat_nginx
+      when: rsdat_nginx_enabled | default(true) | bool
