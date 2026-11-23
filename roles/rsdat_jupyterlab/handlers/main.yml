@@ -5,14 +5,3 @@
     state: restarted
     daemon_reload: true
 
-- name: Reload SSH server
-  listen: Reload SSH server
-  ansible.builtin.command:
-    cmd: sshd -t
-  changed_when: true
-  notify: Reload ssh service
-
-- name: Reload ssh service
-  ansible.builtin.systemd:
-    name: ssh
-    state: reloaded

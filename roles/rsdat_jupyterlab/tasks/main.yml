@@ -143,10 +143,19 @@
               X11Forwarding no
               PermitTTY no
               PermitTunnel no
-      notify: Reload SSH server
+      register: rsdat_sshd_dropin
 
-    - name: Apply the SSH server settings now
-      ansible.builtin.meta: flush_handlers
+    - name: Validate the SSH server configuration
+      when: rsdat_sshd_dropin.changed
+      ansible.builtin.command:
+        cmd: sshd -t
+      changed_when: false
+
+    - name: Reload the SSH server
+      when: rsdat_sshd_dropin.changed
+      ansible.builtin.systemd:
+        name: ssh
+        state: reloaded
 
     - name: Check that the SSH server applies them
       ansible.builtin.command:
