@@ -122,6 +122,21 @@ if [ "$SCHEDULER" = cluster ]; then
     else
         echo "FAIL no scheduler job log on the cluster"; exit 1
     fi
+    # the tunnel key may only open listening ports on the workspace's 127.0.0.1
+    docker exec "$WS" cat /home/rsdat/.config/rsdat/dask-tunnel/id_ed25519 | docker exec -i "$SLURM" sh -c 'umask 077; cat > /tmp/tunnel-key'
+    if docker exec "$SLURM" bash -c '
+        o="-i /tmp/tunnel-key -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5"
+        ws='"$CONTACT_HOST"'
+        out=$(timeout 15 ssh $o rsdat@$ws echo shell-works 2>/dev/null); [ "$out" != shell-works ] || { echo "shell allowed"; exit 1; }
+        timeout 10 ssh $o -N -o ExitOnForwardFailure=yes -R 0.0.0.0:45678:127.0.0.1:22 rsdat@$ws 2>/dev/null && { echo "-R on 0.0.0.0 allowed"; exit 1; }
+        timeout 10 ssh $o -N -L 45677:127.0.0.1:8888 rsdat@$ws 2>/dev/null & sleep 3
+        if /opt/venv/bin/python -c "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:45677/jupyter/api/status\", timeout=5)" 2>/dev/null; then echo "-L allowed"; exit 1; fi
+        exit 0'; then
+        echo "PASS tunnel key: no shell, no -L, -R only on 127.0.0.1"
+    else
+        echo "FAIL tunnel key allows more than -R on 127.0.0.1"; exit 1
+    fi
+    docker exec "$SLURM" rm -f /tmp/tunnel-key
     if docker exec "$SLURM" sh -c 'ls -d ${TMPDIR:-/tmp}/rsdat-tls.* 2>/dev/null' | grep -q .; then
         echo "FAIL certificates/tunnel key left on the node"; exit 1
     else
