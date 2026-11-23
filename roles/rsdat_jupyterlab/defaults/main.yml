@@ -59,6 +59,10 @@ rsdat_dask_gateway_cores: 1
 rsdat_dask_gateway_memory: "1GiB"
 rsdat_dask_gateway_walltime: "12:00:00"
 rsdat_dask_gateway_job_extra_directives: []
+# The gateway job ends this long (seconds) after the JupyterLab process or kernel that uses it
+# is gone without closing its clusters (e.g. a crash): it holds a lease connection to the job.
+# On a normal exit the process cancels the job right away.
+rsdat_dask_gateway_idle_timeout: 300
 
 # --- scheduler on the cluster ---
 # Resources of the scheduler job (partition and account: as the workers). The cluster's

@@ -101,6 +101,7 @@ rsdat_dask_scheduler_location: $SCHEDULER
 rsdat_dask_worker_route: $ROUTE
 rsdat_dask_gateway_memory: 200MiB
 rsdat_dask_gateway_walltime: "00:15:00"
+rsdat_dask_gateway_idle_timeout: 30
 rsdat_dask_scheduler_memory: 500MiB
 rsdat_dask_scheduler_walltime: "00:15:00"
 rsdat_dask_tunnel_host: "$CONTACT_HOST"
@@ -116,6 +117,7 @@ grep -q "changed=0" /tmp/rsdat-second-run.log && echo "PASS idempotent" || { ech
 echo "== checks"
 docker exec -e RSDAT_EXPECT_WORKER_NET="$WORKER_NET" -e RSDAT_EXPECT_CONTACT_HOST="$CONTACT_HOST" \
     -e RSDAT_EXPECT_SCHEDULER="$SCHEDULER" -e RSDAT_EXPECT_ROUTE="$ROUTE" \
+    -e RSDAT_GATEWAY_IDLE=30 \
     "$WS" bash /opt/src-component-rsdat/tests/check_workspace.sh
 if docker exec "$SLURM" sh -c 'grep -l "Start worker at" /home/testuser/.rsdat/dask-logs/*.log' >/dev/null 2>&1; then
     echo "PASS worker job logs in ~/.rsdat/dask-logs on the cluster (created by the job)"

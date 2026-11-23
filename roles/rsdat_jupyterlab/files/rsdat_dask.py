@@ -32,12 +32,15 @@ scratch when the job starts (mode 600, removed when the job ends).
     client = Client(cluster)       # or Client("tls://...") - TLS settings come from the config
 """
 import asyncio
+import atexit
 import ipaddress
 import json
 import logging
+import select
 import shlex
 import socket
 import struct
+import subprocess
 import threading
 import time
 from urllib.parse import urlsplit
@@ -360,13 +363,43 @@ class RSDATRemoteScheduler(ProcessInterface):
         await super().close()
 
 
+# Runs in the gateway job (with the workers' Python): holds the job alive while the workspace
+# process that submitted it keeps a "lease" connection open to it through the gateway. When
+# that process ends in any way (also a crash or kill -9), its connection closes; after
+# <idle> seconds without one, the listener exits and the job ends.
+_LEASE_LISTENER = """
+import select, socket, sys, time
+port, idle = int(sys.argv[1]), float(sys.argv[2])
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port))
+srv.listen()
+conns, last = [], time.time()
+while True:
+    ready, _, _ = select.select([srv] + conns, [], [], 5)
+    for c in ready:
+        if c is srv:
+            conns.append(srv.accept()[0])
+        elif not c.recv(64):
+            conns.remove(c)
+            c.close()
+    if conns:
+        last = time.time()
+    elif time.time() - last > idle:
+        print(f"rsdat: no lease from the workspace for {idle:.0f}s, stopping", flush=True)
+        sys.exit(0)
+"""
+
+
 class RSDATGatewayJob(SLURMJob):
     """Gateway job (rsdat.worker-route: gateway): opens a reverse dynamic SSH forward to this
     workspace, so 127.0.0.1:<socks_port> here is a SOCKS proxy that connects from the job's node
     to addresses in the worker network. Restarted when it drops; the job stops after
-    rsdat.gateway.tunnel-give-up seconds without a tunnel."""
+    rsdat.gateway.tunnel-give-up seconds without a tunnel, and after rsdat.gateway.idle-timeout
+    seconds without a lease connection from this workspace (on the node's 127.0.0.1:<lease_port>,
+    through the proxy)."""
 
-    def __init__(self, socks_port, network, **kwargs):
+    def __init__(self, socks_port, network, lease_port, **kwargs):
         cfg = dask.config.get("rsdat.gateway", default={}) or {}
         tunnel = dask.config.get("rsdat.tunnel", default={}) or {}
         prologue = list(dask.config.get(f"jobqueue.{self.config_name}.job-script-prologue",
@@ -383,24 +416,31 @@ class RSDATGatewayJob(SLURMJob):
             job_script_prologue=prologue,
             **kwargs,
         )
+        python = dask.config.get(f"jobqueue.{self.config_name}.python")
         self._job_script_prologue = (list(self._job_script_prologue) + _private_dir_lines()
-                                     + _tunnel_files(tunnel))
+                                     + _tunnel_files(tunnel)
+                                     + _file_lines(f"{REMOTE_TLS_DIR}/lease.py", _LEASE_LISTENER))
         # (no PermitRemoteOpen: it only takes whole hosts or "*", not networks; this process
-        # only sends connections to the worker network through the proxy)
+        # only sends connections to the worker network and the lease through the proxy)
         ssh, dest = _ssh(tunnel)
         give_up = int(cfg.get("tunnel-give-up", 600))
+        idle = int(cfg.get("idle-timeout", 300))
         self._command_template = "\n".join([
+            # the lease listener; the job ends when it does
+            f'{python} "$RSDAT_TLS_DIR/lease.py" {int(lease_port)} {idle} &',
+            "RSDAT_LEASE_PID=$!",
             "RSDAT_SSH_PID=",
-            'trap \'kill $RSDAT_SSH_PID 2>/dev/null; rm -rf "$RSDAT_TLS_DIR"\' EXIT',
+            'trap \'kill $RSDAT_SSH_PID $RSDAT_LEASE_PID 2>/dev/null; rm -rf "$RSDAT_TLS_DIR"\' EXIT',
             # no destination after the port: OpenSSH's reverse dynamic forward (SOCKS)
             f'fwd=(-R "127.0.0.1:{int(socks_port)}")',
             f'echo "rsdat: gateway into {network} for {dest}, SOCKS on its 127.0.0.1:{int(socks_port)}"',
             "RSDAT_TUNNEL_OK=$(date +%s)",
-            "while true; do",
+            "while kill -0 $RSDAT_LEASE_PID 2>/dev/null; do",
             "    RSDAT_SSH_START=$(date +%s)",
             "    " + ssh + " &",
             "    RSDAT_SSH_PID=$!",
-            "    wait $RSDAT_SSH_PID",
+            "    wait -n $RSDAT_LEASE_PID $RSDAT_SSH_PID",
+            "    kill -0 $RSDAT_LEASE_PID 2>/dev/null || break",
             "    now=$(date +%s)",
             "    [ $((now - RSDAT_SSH_START)) -ge 60 ] && RSDAT_TUNNEL_OK=$now",
             f"    if [ $((now - RSDAT_TUNNEL_OK)) -ge {give_up} ]; then",
@@ -492,6 +532,42 @@ async def _socks_ok(port, timeout=5):
         writer.close()
 
 
+def _open_lease(socks_port, lease_port, timeout=10):
+    """Blocking: open the lease connection to the gateway job (its 127.0.0.1:lease_port,
+    through the SOCKS proxy). None if it can't be opened (yet)."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", socks_port), timeout=timeout)
+    except OSError:
+        return None
+    try:
+        sock.sendall(b"\x05\x01\x00")
+        if sock.recv(2) != b"\x05\x00":
+            raise OSError("SOCKS greeting refused")
+        sock.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1")
+                     + struct.pack(">H", lease_port))
+        reply = sock.recv(10)
+        if len(reply) < 2 or reply[1] != 0:
+            raise OSError("lease listener not reachable")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setblocking(False)
+        return sock
+    except OSError:
+        sock.close()
+        return None
+
+
+def _lease_alive(sock):
+    if sock is None:
+        return False
+    try:
+        ready, _, _ = select.select([sock], [], [], 0)
+        if ready and sock.recv(1, socket.MSG_PEEK) == b"":
+            return False
+    except OSError:
+        return False
+    return True
+
+
 class _Gateway:
     """The gateway job of this process, shared by its clusters: submitted with the first
     cluster, resubmitted when it ends while clusters use it, cancelled with the last one."""
@@ -504,6 +580,9 @@ class _Gateway:
         self.network = None
         self._starting = False
         self._checking = False
+        self.lease_port = None
+        self._lease = None
+        atexit.register(self._cancel_at_exit)
 
     async def acquire(self, network):
         with self._mutex:
@@ -532,7 +611,9 @@ class _Gateway:
         _install_gateway_client()
         self.network = ipaddress.ip_network(network, strict=False)
         self.port = self.port or _free_local_port()
-        job = RSDATGatewayJob(self.port, network)
+        # a port for the lease listener on the job's node (random; collisions there are unlikely)
+        self.lease_port = self.lease_port or _free_local_port()
+        job = RSDATGatewayJob(self.port, network, self.lease_port)
         await job.start()
         timeout = float(cfg.get("start-timeout", 900))
         deadline = time.monotonic() + timeout
@@ -550,8 +631,37 @@ class _Gateway:
             await asyncio.sleep(3)
         self.job = job
         _ROUTES[self.network] = self.port
+        await self._renew_lease(deadline)
         logger.info("Gateway job %s: connections to %s go through 127.0.0.1:%s",
                     job.job_id, self.network, self.port)
+
+    async def _renew_lease(self, deadline=None):
+        """(Re)open the lease connection; the job ends without one (rsdat.gateway.idle-timeout)."""
+        if _lease_alive(self._lease):
+            return
+        if self._lease is not None:
+            self._lease.close()
+        self._lease = None
+        deadline = deadline or time.monotonic() + 60
+        while self._lease is None and time.monotonic() < deadline:
+            self._lease = await asyncio.get_running_loop().run_in_executor(
+                None, _open_lease, self.port, self.lease_port)
+            if self._lease is None:
+                await asyncio.sleep(2)
+        if self._lease is None:
+            logger.warning("Could not open the lease to gateway job %s; it will stop after its "
+                           "idle timeout unless the next check succeeds", self.job.job_id)
+
+    def _cancel_at_exit(self):
+        """At interpreter exit (JupyterLab or a kernel stopping without closing its clusters):
+        cancel the gateway job now rather than after its idle timeout."""
+        job = self.job
+        if job is None or not job.job_id:
+            return
+        try:
+            subprocess.run(["scancel", str(job.job_id)], timeout=20, capture_output=True)
+        except Exception:
+            pass                              # the lease timeout ends it anyway
 
     async def check(self):
         """Resubmit the gateway job if it ended while clusters still use it (e.g. walltime)."""
@@ -561,6 +671,7 @@ class _Gateway:
             self._checking = True
         try:
             if await _socks_ok(self.port):
+                await self._renew_lease()
                 return
             state = await _job_state(self.job)
             if state in _ALIVE:
@@ -586,6 +697,9 @@ class _Gateway:
             if last:
                 self.job = None
                 _ROUTES.pop(self.network, None)
+                if self._lease is not None:
+                    self._lease.close()
+                    self._lease = None
         if job is not None:
             await job.close()
 

@@ -97,6 +97,7 @@ rsdat:
     cores: {{ rsdat_dask_gateway_cores }}
     memory: "{{ rsdat_dask_gateway_memory }}"
     walltime: "{{ rsdat_dask_gateway_walltime }}"
+    idle-timeout: {{ rsdat_dask_gateway_idle_timeout }}
     job-extra-directives: {{ ((['--output=/dev/null'] if rsdat_dask_log_directory | length > 0 else []) + (rsdat_dask_gateway_job_extra_directives | list)) | to_json }}
     start-timeout: {{ rsdat_dask_scheduler_start_timeout }}
     tunnel-give-up: {{ rsdat_dask_tunnel_give_up }}

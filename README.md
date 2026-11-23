@@ -54,6 +54,7 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_worker_route` | `gateway` | Scheduler on the workspace: how it reaches the workers, `gateway` (through a gateway job's SSH tunnel) or `direct` |
 | `rsdat_dask_gateway_cores`, `rsdat_dask_gateway_memory`, `rsdat_dask_gateway_walltime` | `1`, `1GiB`, `12:00:00` | Gateway job; partition and account as the workers. Resubmitted when it ends while clusters use it |
 | `rsdat_dask_gateway_job_extra_directives` | `[]` | Extra `#SBATCH` options for the gateway job |
+| `rsdat_dask_gateway_idle_timeout` | `300` | Seconds after which a gateway job ends when the process that uses it is gone without closing its clusters |
 | `rsdat_dask_worker_network` | `""` | Network (CIDR) the workers (and a scheduler on the cluster) listen on and advertise, e.g. `172.18.0.0/16` on Snellius. Each job picks its node's address in this network when it starts |
 | `rsdat_dask_scheduler_cores`, `rsdat_dask_scheduler_memory`, `rsdat_dask_scheduler_walltime` | `1`, `2GiB`, `12:00:00` | Scheduler job (scheduler on the cluster); partition and account as the workers. The cluster ends with this job |
 | `rsdat_dask_scheduler_job_extra_directives` | `[]` | Extra `#SBATCH` options for the scheduler job |
@@ -152,7 +153,7 @@ None of them logs in to the cluster with SSH (which on Snellius needs MFA): the 
 - **Scheduler → workers:** the workers listen on the cluster's internal network (`rsdat_dask_worker_network`, `172.18.0.0/16` on Snellius), where they also reach each other. The workspace can't reach that network, so:
   1. With its first cluster, a JupyterLab process submits a **gateway job**: `ssh -N -R 127.0.0.1:<port> rsdat@<workspace>`, OpenSSH's reverse dynamic forward. On the workspace, `127.0.0.1:<port>` is then a SOCKS proxy that connects from the gateway's node.
   2. In that process, Dask's connections to addresses in the worker network go through the proxy; everything else connects directly. TLS runs end to end through it. No root, iptables or extra software on the workspace.
-  3. The gateway is shared by the process's clusters, resubmitted when it ends while they use it (e.g. at its walltime, `rsdat_dask_gateway_walltime`), and cancelled with the last cluster. While it's being resubmitted, the scheduler can't reach the workers: results and restarts wait, but the workers stay registered (they connect to the scheduler themselves).
+  3. The gateway is shared by the process's clusters, resubmitted when it ends while they use it (e.g. at its walltime, `rsdat_dask_gateway_walltime`), and cancelled with the last cluster. If the process ends without closing its clusters, it cancels the gateway at exit; after a crash or `kill -9`, the job ends by itself `rsdat_dask_gateway_idle_timeout` seconds later (default 300): the process holds a lease connection through the gateway to a small listener in the job, and the job stops when no lease has been open for that long. While it's being resubmitted, the scheduler can't reach the workers: results and restarts wait, but the workers stay registered (they connect to the scheduler themselves).
 - Notebooks that connect with `Client("tls://…:8786")` from another kernel talk to the scheduler only, so they need no gateway. `client.run` and `gather` go through the scheduler too.
 - Traffic between the scheduler and the workers (task results, data the notebook gathers) goes through one SSH connection on the gateway's node.
 
@@ -221,6 +222,7 @@ The checks:
   - Direct: the workers connect through the contact host.
 - The workers compute a result, `client.restart()` works (the scheduler reaches the nannies), the dashboard answers (through the tunnel when the scheduler is on the cluster), and all jobs, including the gateway, are cancelled on close.
 - A client that only knows the scheduler address connects with TLS from the config, and a plain `tcp://` client is refused.
+- Gateway: the gateway job ends when its process exits, or is killed with `-9`, without closing its cluster.
 - The Dask extension creates a cluster and scales it to one worker.
 - JupyterLab comes back after a restart.
 - The jobs write their logs to `~/.rsdat/dask-logs` on the cluster and leave no certificates or keys on the node.

@@ -117,6 +117,32 @@ chmod 644 /tmp/dask_check.py
 check "RSDATSLURMCluster with workspace defaults (scheduler on the ${RSDAT_EXPECT_SCHEDULER:-workspace}$([ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && echo ", route ${RSDAT_EXPECT_ROUTE:-direct}"), 2 workers, worker network, restart, dashboard)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_EXPECT_WORKER_NET=${RSDAT_EXPECT_WORKER_NET:-} RSDAT_EXPECT_CONTACT_HOST=${RSDAT_EXPECT_CONTACT_HOST:-} RSDAT_EXPECT_SCHEDULER=${RSDAT_EXPECT_SCHEDULER:-}; cd ~ && timeout 420 python /tmp/dask_check.py"
 check "Dask jobs (workers, scheduler/gateway) cancelled after close" as_user 'sleep 5; ! squeue | grep -q " R .*dask-\| PD .*dask-"'
 
+# Gateway: a process that ends without closing its cluster doesn't leave the gateway job behind
+if [ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && [ "${RSDAT_EXPECT_ROUTE:-direct}" = gateway ]; then
+cat > /tmp/gateway_orphan.py <<'PY'
+import os, sys, time
+from rsdat_dask import RSDATSLURMCluster, _GATEWAY
+cluster = RSDATSLURMCluster()
+print(_GATEWAY.job.job_id, flush=True)
+if sys.argv[1] == "exit":
+    sys.exit(0)                                # normal exit, cluster not closed: atexit cancels
+time.sleep(3600)                               # killed with -9 by the check: the lease ends it
+PY
+cat > /tmp/gateway_orphan.sh <<'SH'
+set -e
+# (cancelled jobs stay listed for a while, with state CA)
+gone() { for _ in $(seq "$2"); do squeue | awk -v id="$1" '$1 == id && ($5 == "R" || $5 == "PD") {f = 1} END {exit !f}' || return 0; sleep 2; done; return 1; }
+id=$(timeout 300 python /tmp/gateway_orphan.py exit | tail -1)
+echo "exit: gateway job $id"; gone "$id" 15 || { echo "gateway $id still there after a normal exit"; exit 1; }
+python /tmp/gateway_orphan.py kill > /tmp/orphan.out & pid=$!
+for _ in $(seq 150); do [ -s /tmp/orphan.out ] && break; sleep 2; done
+id=$(tail -1 /tmp/orphan.out); kill -9 $pid
+echo "kill -9: gateway job $id"; gone "$id" $(( (RSDAT_GATEWAY_IDLE + 60) / 2 )) || { echo "gateway $id still there after kill -9"; exit 1; }
+SH
+chmod 644 /tmp/gateway_orphan.py /tmp/gateway_orphan.sh
+check "Gateway job ends when its process exits or is killed without closing the cluster" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_GATEWAY_IDLE=${RSDAT_GATEWAY_IDLE:-300}; cd ~ && timeout 600 bash /tmp/gateway_orphan.sh"
+fi
+
 # Dask extension: create a cluster through the JupyterLab extension API (the "New" button)
 cat > /tmp/labext_check.sh <<'SH'
 set -e
