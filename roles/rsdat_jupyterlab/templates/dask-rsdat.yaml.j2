@@ -77,13 +77,28 @@ rsdat:
     job-extra-directives: {{ ((['--output=/dev/null'] if rsdat_dask_log_directory | length > 0 else []) + (rsdat_dask_scheduler_job_extra_directives | list)) | to_json }}
     start-timeout: {{ rsdat_dask_scheduler_start_timeout }}
     tunnel-give-up: {{ rsdat_dask_tunnel_give_up }}
+{% endif %}
+{% if rsdat_dask_scheduler_location == 'cluster' or rsdat_dask_worker_route == 'gateway' %}
   tunnel:
     host: {{ rsdat_dask_tunnel_host | to_json }}
     port: {{ rsdat_dask_tunnel_port }}
     user: {{ rsdat_user | to_json }}
     key-file: {{ (rsdat_dask_tunnel_dir ~ '/id_ed25519') | to_json }}
     host-key-file: {{ rsdat_dask_tunnel_host_key | to_json }}
-{% else %}
+{% endif %}
+{% if rsdat_dask_scheduler_location == 'workspace' %}
+  # how the scheduler on this workspace reaches the workers: "gateway" or "direct"
+  worker-route: {{ rsdat_dask_worker_route | to_json }}
+{%   if rsdat_dask_worker_route == 'gateway' %}
+  gateway:
+    network: {{ rsdat_dask_worker_network | to_json }}
+    cores: {{ rsdat_dask_gateway_cores }}
+    memory: "{{ rsdat_dask_gateway_memory }}"
+    walltime: "{{ rsdat_dask_gateway_walltime }}"
+    job-extra-directives: {{ ((['--output=/dev/null'] if rsdat_dask_log_directory | length > 0 else []) + (rsdat_dask_gateway_job_extra_directives | list)) | to_json }}
+    start-timeout: {{ rsdat_dask_scheduler_start_timeout }}
+    tunnel-give-up: {{ rsdat_dask_tunnel_give_up }}
+{%   endif %}
   # Host the workers use to reach the scheduler (distributed's own contact_address option
   # has no effect)
   scheduler-contact-host: {{ (rsdat_dask_contact_host | to_json) if rsdat_dask_contact_host else 'null' }}

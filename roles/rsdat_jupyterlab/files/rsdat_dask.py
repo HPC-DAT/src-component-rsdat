@@ -10,8 +10,14 @@ private network with the cluster. Where the scheduler runs depends on ``rsdat.sc
   cluster opens connections, so this works when the workspace can't reach the compute nodes.
   The SSH key may only open listening ports on the workspace's 127.0.0.1 (authorized_keys
   options set by the component).
-- ``workspace``: the scheduler runs in this JupyterLab, as with SLURMCluster. Needs connections
-  in both directions; workers reach it at ``rsdat.scheduler-contact-host``.
+- ``workspace``: the scheduler runs in this JupyterLab, as with SLURMCluster. Workers reach it at
+  ``rsdat.scheduler-contact-host``. For the other direction, ``rsdat.worker-route``:
+
+  - ``gateway``: a small gateway job on the cluster opens a reverse dynamic SSH forward
+    (``ssh -R 127.0.0.1:<port>``) to this workspace, i.e. a SOCKS proxy into the cluster. This
+    process connects to addresses in ``rsdat.gateway.network`` (the workers) through it; other
+    connections go directly. For when the workspace can't connect to the compute nodes.
+  - ``direct``: the scheduler connects to the workers directly.
 
 In both, TLS is on when the dask config requires encryption (``distributed.comm.require-encryption``,
 set by the component), with the workspace's certificates (``distributed.comm.tls.*``).
@@ -26,23 +32,30 @@ scratch when the job starts (mode 600, removed when the job ends).
     client = Client(cluster)       # or Client("tls://...") - TLS settings come from the config
 """
 import asyncio
+import ipaddress
 import json
 import logging
 import shlex
 import socket
+import struct
+import threading
 import time
 from urllib.parse import urlsplit
 
 import dask
 from dask_jobqueue import SLURMCluster
 from dask_jobqueue.slurm import SLURMJob
+from distributed.comm import tcp as _tcp
 from distributed.core import rpc
 from distributed.deploy.spec import ProcessInterface
 from distributed.security import Security
 from distributed.utils import format_dashboard_link
+from tornado.ioloop import PeriodicCallback
+from tornado.iostream import StreamClosedError
+from tornado.tcpclient import TCPClient
 
 __all__ = ["RSDATSLURMCluster", "RSDATSLURMJob", "RSDATSchedulerJob", "RSDATRemoteScheduler",
-           "worker_scheduler_address"]
+           "RSDATGatewayJob", "worker_scheduler_address"]
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +66,12 @@ _PEM_DELIMITER = "RSDAT_PEM_END"
 
 def scheduler_on_cluster():
     return dask.config.get("rsdat.scheduler-location", default="workspace") == "cluster"
+
+
+def uses_gateway():
+    """Scheduler on the workspace, workers reached through the gateway job."""
+    return (not scheduler_on_cluster()
+            and dask.config.get("rsdat.worker-route", default="direct") == "gateway")
 
 
 def worker_scheduler_address(scheduler_address, contact_host=None):
@@ -150,6 +169,45 @@ def _read(value):
         return f.read()
 
 
+def _tunnel_files(tunnel):
+    """Job-script lines that write the tunnel key and the workspace's host key (known_hosts)."""
+    host = tunnel["host"]
+    port = int(tunnel.get("port", 22))
+    name = host if port == 22 else f"[{host}]:{port}"
+    known = [f"{name} {line.split()[0]} {line.split()[1]}"
+             for line in _read(tunnel["host-key-file"]).splitlines() if line.strip()]
+    return (_file_lines(f"{REMOTE_TLS_DIR}/tunnel.key", _read(tunnel["key-file"]))
+            + _file_lines(f"{REMOTE_TLS_DIR}/known_hosts", "\n".join(known)))
+
+
+def _ssh(tunnel, *options):
+    """ssh command (one shell line) for the tunnel to the workspace; forwards in "${fwd[@]}"."""
+    dest = f"{tunnel.get('user', 'rsdat')}@{tunnel['host']}"
+    return " ".join(["ssh", "-N", "-p", str(int(tunnel.get("port", 22))),
+                     '-i "$RSDAT_TLS_DIR/tunnel.key"', "-o BatchMode=yes", "-o IdentitiesOnly=yes",
+                     '-o UserKnownHostsFile="$RSDAT_TLS_DIR/known_hosts"',
+                     "-o StrictHostKeyChecking=yes", "-o ExitOnForwardFailure=yes",
+                     "-o ServerAliveInterval=15", "-o ServerAliveCountMax=4", *options,
+                     '"${fwd[@]}"', shlex.quote(dest)]), dest
+
+
+async def _job_state(job):
+    """State of a Slurm job from squeue (ENDED when it's no longer listed)."""
+    try:
+        out = await job._call(["squeue", "--json"])
+        jobs = json.loads(out).get("jobs", [])
+    except Exception:                     # squeue through the REST API failed: keep waiting
+        return "UNKNOWN"
+    for j in jobs:
+        if str(j.get("job_id")) == str(job.job_id):
+            state = j.get("job_state")
+            return (state[0] if isinstance(state, list) and state else state) or "UNKNOWN"
+    return "ENDED"
+
+
+_ALIVE = ("PENDING", "CONFIGURING", "RUNNING", "UNKNOWN")
+
+
 class RSDATSchedulerJob(SLURMJob):
     """The Slurm job that runs the Dask scheduler on the cluster and the reverse SSH tunnel to
     this workspace (rsdat.scheduler-location: cluster).
@@ -179,19 +237,9 @@ class RSDATSchedulerJob(SLURMJob):
         )
         python = dask.config.get(f"jobqueue.{self.config_name}.python")
         self._job_script_prologue = (list(self._job_script_prologue) + _private_dir_lines()
-                                     + tls_lines + self._tunnel_files(tunnel))
+                                     + tls_lines + _tunnel_files(tunnel))
         self._command_template = self._scheduler_and_tunnel(
             python, remote_security, tunnel, tunnel_port, dashboard_port, cfg)
-
-    @staticmethod
-    def _tunnel_files(tunnel):
-        host = tunnel["host"]
-        port = int(tunnel.get("port", 22))
-        name = host if port == 22 else f"[{host}]:{port}"
-        known = [f"{name} {line.split()[0]} {line.split()[1]}"
-                 for line in _read(tunnel["host-key-file"]).splitlines() if line.strip()]
-        return (_file_lines(f"{REMOTE_TLS_DIR}/tunnel.key", _read(tunnel["key-file"]))
-                + _file_lines(f"{REMOTE_TLS_DIR}/known_hosts", "\n".join(known)))
 
     @staticmethod
     def _scheduler_and_tunnel(python, security, tunnel, tunnel_port, dashboard_port, cfg):
@@ -211,12 +259,7 @@ class RSDATSchedulerJob(SLURMJob):
         idle = cfg.get("idle-timeout")
         if idle:
             sched.append(f"--idle-timeout {q(str(idle))}")
-        dest = f"{tunnel.get('user', 'rsdat')}@{tunnel['host']}"
-        ssh = ["ssh", "-N", "-p", str(int(tunnel.get("port", 22))),
-               '-i "$RSDAT_TLS_DIR/tunnel.key"', "-o BatchMode=yes", "-o IdentitiesOnly=yes",
-               '-o UserKnownHostsFile="$RSDAT_TLS_DIR/known_hosts"', "-o StrictHostKeyChecking=yes",
-               "-o ExitOnForwardFailure=yes", "-o ServerAliveInterval=15",
-               "-o ServerAliveCountMax=4", '"${fwd[@]}"', q(dest)]
+        ssh, dest = _ssh(tunnel)
         give_up = int(cfg.get("tunnel-give-up", 600))
         return "\n".join(env + [
             # the scheduler, in the background; its address is in the scheduler file
@@ -240,7 +283,7 @@ class RSDATSchedulerJob(SLURMJob):
             "RSDAT_TUNNEL_OK=$(date +%s)",
             "while kill -0 $RSDAT_SCHED_PID 2>/dev/null; do",
             "    RSDAT_SSH_START=$(date +%s)",
-            "    " + " ".join(ssh) + " &",
+            "    " + ssh + " &",
             "    RSDAT_SSH_PID=$!",
             "    wait -n $RSDAT_SCHED_PID $RSDAT_SSH_PID",
             "    kill -0 $RSDAT_SCHED_PID 2>/dev/null || break",
@@ -292,8 +335,8 @@ class RSDATRemoteScheduler(ProcessInterface):
                     identity = await r.identity()
                 break
             except (OSError, asyncio.TimeoutError):
-                state = await self._job_state()
-                if state not in ("PENDING", "CONFIGURING", "RUNNING", "UNKNOWN"):
+                state = await _job_state(self.job)
+                if state not in _ALIVE:
                     raise RuntimeError(
                         f"Dask scheduler job {self.job.job_id} ended ({state}) before it could be "
                         "reached through the tunnel; see its log on the cluster "
@@ -311,23 +354,243 @@ class RSDATRemoteScheduler(ProcessInterface):
         logger.info("Scheduler %s reachable at %s", self.address, address)
         await super().start()
 
-    async def _job_state(self):
-        """State of the scheduler job, from squeue (ENDED when it's no longer listed)."""
-        try:
-            out = await self.job._call(["squeue", "--json"])
-            jobs = json.loads(out).get("jobs", [])
-        except Exception:                     # squeue through the REST API failed: keep waiting
-            return "UNKNOWN"
-        for job in jobs:
-            if str(job.get("job_id")) == str(self.job.job_id):
-                state = job.get("job_state")
-                return (state[0] if isinstance(state, list) and state else state) or "UNKNOWN"
-        return "ENDED"
-
     async def close(self):
         if self.job is not None:
             await self.job.close()
         await super().close()
+
+
+class RSDATGatewayJob(SLURMJob):
+    """Gateway job (rsdat.worker-route: gateway): opens a reverse dynamic SSH forward to this
+    workspace, so 127.0.0.1:<socks_port> here is a SOCKS proxy that connects from the job's node
+    to addresses in the worker network. Restarted when it drops; the job stops after
+    rsdat.gateway.tunnel-give-up seconds without a tunnel."""
+
+    def __init__(self, socks_port, network, **kwargs):
+        cfg = dask.config.get("rsdat.gateway", default={}) or {}
+        tunnel = dask.config.get("rsdat.tunnel", default={}) or {}
+        prologue = list(dask.config.get(f"jobqueue.{self.config_name}.job-script-prologue",
+                                        default=None) or [])
+        super().__init__(
+            scheduler="tcp://gateway-placeholder:0",
+            name="dask-gateway",
+            job_name="dask-gateway",
+            cores=cfg.get("cores", 1),
+            processes=1,
+            memory=cfg.get("memory", "1GiB"),
+            walltime=cfg.get("walltime"),
+            job_extra_directives=list(cfg.get("job-extra-directives") or []),
+            job_script_prologue=prologue,
+            **kwargs,
+        )
+        self._job_script_prologue = (list(self._job_script_prologue) + _private_dir_lines()
+                                     + _tunnel_files(tunnel))
+        # (no PermitRemoteOpen: it only takes whole hosts or "*", not networks; this process
+        # only sends connections to the worker network through the proxy)
+        ssh, dest = _ssh(tunnel)
+        give_up = int(cfg.get("tunnel-give-up", 600))
+        self._command_template = "\n".join([
+            "RSDAT_SSH_PID=",
+            'trap \'kill $RSDAT_SSH_PID 2>/dev/null; rm -rf "$RSDAT_TLS_DIR"\' EXIT',
+            # no destination after the port: OpenSSH's reverse dynamic forward (SOCKS)
+            f'fwd=(-R "127.0.0.1:{int(socks_port)}")',
+            f'echo "rsdat: gateway into {network} for {dest}, SOCKS on its 127.0.0.1:{int(socks_port)}"',
+            "RSDAT_TUNNEL_OK=$(date +%s)",
+            "while true; do",
+            "    RSDAT_SSH_START=$(date +%s)",
+            "    " + ssh + " &",
+            "    RSDAT_SSH_PID=$!",
+            "    wait $RSDAT_SSH_PID",
+            "    now=$(date +%s)",
+            "    [ $((now - RSDAT_SSH_START)) -ge 60 ] && RSDAT_TUNNEL_OK=$now",
+            f"    if [ $((now - RSDAT_TUNNEL_OK)) -ge {give_up} ]; then",
+            f'        echo "rsdat: no tunnel to {dest} for {give_up}s, stopping" >&2',
+            "        exit 1",
+            "    fi",
+            '    echo "rsdat: tunnel closed, reconnecting" >&2',
+            "    sleep 10",
+            "done",
+        ])
+
+
+# --- connections from this process to the workers, through the gateway's SOCKS proxy ---
+
+_ROUTES = {}            # ipaddress network -> SOCKS port on 127.0.0.1
+
+
+def _socks_port_for(host):
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    for net, port in _ROUTES.items():
+        if ip in net:
+            return port
+    return None
+
+
+async def _socks5_connect(stream, host, port):
+    """SOCKS5 CONNECT (no authentication) to host:port over an open stream to the proxy."""
+    await stream.write(b"\x05\x01\x00")
+    if await stream.read_bytes(2) != b"\x05\x00":
+        raise StreamClosedError(real_error=OSError("SOCKS proxy refused the greeting"))
+    await stream.write(b"\x05\x01\x00\x01" + socket.inet_aton(host) + struct.pack(">H", port))
+    ver, rep, _, atyp = await stream.read_bytes(4)
+    if rep != 0:
+        raise StreamClosedError(real_error=ConnectionRefusedError(
+            f"gateway could not connect to {host}:{port} (SOCKS reply {rep})"))
+    if atyp == 1:
+        await stream.read_bytes(4 + 2)
+    elif atyp == 4:
+        await stream.read_bytes(16 + 2)
+    else:
+        (n,) = await stream.read_bytes(1)
+        await stream.read_bytes(n + 2)
+
+
+class _GatewayTCPClient(TCPClient):
+    """tornado TCPClient for distributed's tcp:// and tls:// connectors: addresses in a routed
+    network go through the SOCKS proxy (TLS on top, end to end), the rest directly."""
+
+    async def connect(self, host, port, af=socket.AF_UNSPEC, ssl_options=None,
+                      max_buffer_size=None, source_ip=None, source_port=None, timeout=None):
+        socks = _socks_port_for(host)
+        if socks is None:
+            return await super().connect(host, port, af=af, ssl_options=ssl_options,
+                                         max_buffer_size=max_buffer_size, source_ip=source_ip,
+                                         source_port=source_port, timeout=timeout)
+        stream = await super().connect("127.0.0.1", socks, max_buffer_size=max_buffer_size,
+                                       timeout=timeout)
+        try:
+            await _socks5_connect(stream, host, int(port))
+        except BaseException:
+            stream.close()
+            raise
+        if ssl_options is not None:
+            stream = await stream.start_tls(False, ssl_options=ssl_options)
+        return stream
+
+
+def _install_gateway_client():
+    if not isinstance(_tcp.BaseTCPConnector.client, _GatewayTCPClient):
+        _tcp.BaseTCPConnector.client = _GatewayTCPClient(resolver=_tcp._DefaultLoopResolver())
+
+
+async def _socks_ok(port, timeout=5):
+    """Is the gateway's SOCKS proxy answering on 127.0.0.1:port?"""
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    try:
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        return await asyncio.wait_for(reader.readexactly(2), timeout) == b"\x05\x00"
+    except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError):
+        return False
+    finally:
+        writer.close()
+
+
+class _Gateway:
+    """The gateway job of this process, shared by its clusters: submitted with the first
+    cluster, resubmitted when it ends while clusters use it, cancelled with the last one."""
+
+    def __init__(self):
+        self._mutex = threading.Lock()
+        self.users = 0
+        self.job = None
+        self.port = None
+        self.network = None
+        self._starting = False
+        self._checking = False
+
+    async def acquire(self, network):
+        with self._mutex:
+            self.users += 1
+            first = self.job is None and not self._starting
+            if first:
+                self._starting = True
+        try:
+            if first:
+                try:
+                    await self._start(network)
+                finally:
+                    self._starting = False
+            else:
+                while self._starting:
+                    await asyncio.sleep(0.5)
+                if self.job is None:
+                    raise RuntimeError("the Dask gateway job failed to start")
+        except BaseException:
+            with self._mutex:
+                self.users -= 1
+            raise
+
+    async def _start(self, network):
+        cfg = dask.config.get("rsdat.gateway", default={}) or {}
+        _install_gateway_client()
+        self.network = ipaddress.ip_network(network, strict=False)
+        self.port = self.port or _free_local_port()
+        job = RSDATGatewayJob(self.port, network)
+        await job.start()
+        timeout = float(cfg.get("start-timeout", 900))
+        deadline = time.monotonic() + timeout
+        logger.info("Waiting for gateway job %s (SOCKS on 127.0.0.1:%s)", job.job_id, self.port)
+        while not await _socks_ok(self.port):
+            state = await _job_state(job)
+            if state not in _ALIVE:
+                raise RuntimeError(
+                    f"Dask gateway job {job.job_id} ended ({state}) before its tunnel opened; "
+                    "see dask-gateway-<job id>.log in the worker log directory on the cluster")
+            if time.monotonic() > deadline:
+                await job.close()
+                raise RuntimeError(f"Dask gateway job {job.job_id} not reachable after "
+                                   f"{timeout:.0f}s (state {state}); job cancelled")
+            await asyncio.sleep(3)
+        self.job = job
+        _ROUTES[self.network] = self.port
+        logger.info("Gateway job %s: connections to %s go through 127.0.0.1:%s",
+                    job.job_id, self.network, self.port)
+
+    async def check(self):
+        """Resubmit the gateway job if it ended while clusters still use it (e.g. walltime)."""
+        with self._mutex:
+            if self._checking or self._starting or self.job is None or self.users == 0:
+                return
+            self._checking = True
+        try:
+            if await _socks_ok(self.port):
+                return
+            state = await _job_state(self.job)
+            if state in _ALIVE:
+                return
+            logger.warning("Gateway job %s ended (%s); submitting a new one", self.job.job_id, state)
+            old, self.job = self.job, None
+            self._starting = True
+            try:
+                await self._start(str(self.network))
+            except Exception:
+                self.job = old          # try again at the next check
+                logger.exception("Could not restart the Dask gateway job")
+            finally:
+                self._starting = False
+        finally:
+            self._checking = False
+
+    async def release(self):
+        with self._mutex:
+            self.users -= 1
+            last = self.users == 0
+            job = self.job if last else None
+            if last:
+                self.job = None
+                _ROUTES.pop(self.network, None)
+        if job is not None:
+            await job.close()
+
+
+_GATEWAY = _Gateway()
 
 
 class RSDATSLURMCluster(SLURMCluster):
@@ -339,7 +602,35 @@ class RSDATSLURMCluster(SLURMCluster):
             security = Security()
         if scheduler_on_cluster():
             kwargs.setdefault("scheduler_cls", RSDATRemoteScheduler)
+        self._gateway_network = (dask.config.get("rsdat.gateway.network", default=None)
+                                 if uses_gateway() else None)
+        if uses_gateway() and not self._gateway_network:
+            raise ValueError("rsdat.worker-route is 'gateway' but rsdat.gateway.network is not set")
+        self._gateway_acquired = False
         super().__init__(*args, security=security, **kwargs)
+
+    async def _start(self):
+        if self._gateway_network and not self._gateway_acquired:
+            # the scheduler (in this process) reaches the workers through the gateway job
+            await _GATEWAY.acquire(self._gateway_network)
+            self._gateway_acquired = True
+            self.periodic_callbacks["rsdat-gateway"] = PeriodicCallback(_GATEWAY.check, 30_000)
+        try:
+            await super()._start()
+        except BaseException:
+            await self._release_gateway()
+            raise
+
+    async def _close(self):
+        try:
+            await super()._close()
+        finally:
+            await self._release_gateway()
+
+    async def _release_gateway(self):
+        if self._gateway_acquired:
+            self._gateway_acquired = False
+            await _GATEWAY.release()
 
     def _get_worker_security(self, security):
         # dask-jobqueue would dump in-memory credentials to a shared directory and pass paths;

@@ -10,9 +10,10 @@
 #   SLURM_IMAGE     Slurm test image (default slurm-cli-proxy-test; build it with
 #                   testing/slurm-container in the SLURM-CLI-API-Proxy-client repo). The test
 #                   adds an SSH client, iptables and bokeh to it (tests/Dockerfile.slurm).
-#   SCHEDULER       where the Dask scheduler runs: 'cluster' (default; the workspace can't
-#                   connect to the Slurm container except to slurmrestd, as on Snellius) or
-#                   'workspace' (connections in both directions)
+#   SCHEDULER       where the Dask scheduler runs: 'workspace' (default) or 'cluster'
+#   ROUTE           scheduler on the workspace: how it reaches the workers, 'gateway' (default)
+#                   or 'direct'. With 'gateway' or SCHEDULER=cluster the workspace can't connect
+#                   to the Slurm container except to slurmrestd, as on Snellius.
 #   NETWORK_MODE    'bridge' (default: own docker network, works with Docker Desktop) or
 #                   'host' (workspace on the host network, for hosts that need a proxy)
 #   EXTRA_ENV       extra -e options for the ansible run (e.g. proxy settings)
@@ -22,7 +23,9 @@ REPO="$(cd "$HERE/.." && pwd)"
 SLURM_IMAGE="${SLURM_IMAGE:-slurm-cli-proxy-test}"
 WS_IMAGE="${WS_IMAGE:-rsdat-test-workspace}"
 NETWORK_MODE="${NETWORK_MODE:-bridge}"
-SCHEDULER="${SCHEDULER:-cluster}"
+SCHEDULER="${SCHEDULER:-workspace}"
+ROUTE="${ROUTE:-gateway}"
+BLOCKED=$([ "$SCHEDULER" = cluster ] || [ "$ROUTE" = gateway ] && echo 1 || echo 0)
 NET=rsdat-test
 WS=rsdat-ws
 SLURM=rsdat-slurm
@@ -55,7 +58,7 @@ fi
 
 # the Dask workers (in the Slurm container) must listen on this network
 WORKER_NET="$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$NET")"
-if [ "$SCHEDULER" = cluster ]; then
+if [ "$BLOCKED" = 1 ]; then
     # like Snellius: the workspace may only reach slurmrestd; everything else must be opened
     # from the cluster side (the scheduler's SSH tunnel)
     if [ "$NETWORK_MODE" = host ]; then
@@ -95,6 +98,9 @@ rsdat_dask_walltime: "00:15:00"
 rsdat_dask_job_directory: /tmp
 rsdat_dask_worker_network: "$WORKER_NET"
 rsdat_dask_scheduler_location: $SCHEDULER
+rsdat_dask_worker_route: $ROUTE
+rsdat_dask_gateway_memory: 200MiB
+rsdat_dask_gateway_walltime: "00:15:00"
 rsdat_dask_scheduler_memory: 500MiB
 rsdat_dask_scheduler_walltime: "00:15:00"
 rsdat_dask_tunnel_host: "$CONTACT_HOST"
@@ -109,7 +115,7 @@ grep -q "changed=0" /tmp/rsdat-second-run.log && echo "PASS idempotent" || { ech
 
 echo "== checks"
 docker exec -e RSDAT_EXPECT_WORKER_NET="$WORKER_NET" -e RSDAT_EXPECT_CONTACT_HOST="$CONTACT_HOST" \
-    -e RSDAT_EXPECT_SCHEDULER="$SCHEDULER" \
+    -e RSDAT_EXPECT_SCHEDULER="$SCHEDULER" -e RSDAT_EXPECT_ROUTE="$ROUTE" \
     "$WS" bash /opt/src-component-rsdat/tests/check_workspace.sh
 if docker exec "$SLURM" sh -c 'grep -l "Start worker at" /home/testuser/.rsdat/dask-logs/*.log' >/dev/null 2>&1; then
     echo "PASS worker job logs in ~/.rsdat/dask-logs on the cluster (created by the job)"
@@ -122,6 +128,14 @@ if [ "$SCHEDULER" = cluster ]; then
     else
         echo "FAIL no scheduler job log on the cluster"; exit 1
     fi
+elif [ "$ROUTE" = gateway ]; then
+    if docker exec "$SLURM" sh -c 'grep -l "rsdat: gateway into" /home/testuser/.rsdat/dask-logs/dask-gateway-*.log' >/dev/null 2>&1; then
+        echo "PASS gateway job log on the cluster"
+    else
+        echo "FAIL no gateway job log on the cluster"; exit 1
+    fi
+fi
+if [ "$BLOCKED" = 1 ]; then
     # the tunnel key may only open listening ports on the workspace's 127.0.0.1
     docker exec "$WS" cat /home/rsdat/.config/rsdat/dask-tunnel/id_ed25519 | docker exec -i "$SLURM" sh -c 'umask 077; cat > /tmp/tunnel-key'
     if docker exec "$SLURM" bash -c '

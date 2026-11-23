@@ -3,19 +3,17 @@
 SURF Research Cloud component (Ansible) for **RS-DAT** on an Ubuntu workspace:
 
 - **JupyterLab** with the **Dask** extension (`dask-labextension`) and the **git** extension (`jupyterlab-git`)
-- **Dask on Slurm**: notebooks on the workspace use a Dask cluster whose scheduler and workers run as jobs on a remote Slurm cluster. The scheduler job opens an SSH tunnel back to the workspace, so the workspace never has to connect to the compute nodes (see [Networking](#networking)). Jobs are submitted and cancelled through the cluster's **Slurm REST API**, using the [SLURM-CLI-API-Proxy client](https://github.com/SLURM-CLI-API-Proxy/SLURM-CLI-API-Proxy-client) (`sbatch`, `squeue`, `scancel`, … over REST). The workspace needs no Slurm installation, no munge and no SSH access to the cluster.
+- **Dask on Slurm**: the Dask scheduler runs on the workspace (in JupyterLab), the workers run as jobs on a remote Slurm cluster. The workspace never has to connect to the compute nodes: a small gateway job opens an SSH tunnel back to the workspace, through which the scheduler reaches the workers (see [Networking](#networking)). Jobs are submitted and cancelled through the cluster's **Slurm REST API**, using the [SLURM-CLI-API-Proxy client](https://github.com/SLURM-CLI-API-Proxy/SLURM-CLI-API-Proxy-client) (`sbatch`, `squeue`, `scancel`, … over REST). The workspace needs no Slurm installation, no munge and no SSH access to the cluster.
 - **Prefect server** (UI and API) for workflows
 
 JupyterLab and Prefect are published through **SRC-Nginx** with SRAM login, at `https://<workspace>/jupyter/` and `https://<workspace>/prefect/`.
 
 ```
- browser ──SRAM──▶ SRC-Nginx ──▶ JupyterLab (Dask client) ──sbatch/scancel (REST)──▶ slurmrestd
-                       │           ▲  127.0.0.1:<port>                                    │
-                       └──▶ Prefect│                                                     ▼
-                     workspace sshd◀──── SSH tunnel (-R) ──── Dask scheduler (Slurm job)
-                                                                    ▲  internal network
-                                                                    ▼
-                                                              Dask workers (Slurm jobs)
+ browser ──SRAM──▶ SRC-Nginx ──▶ JupyterLab + Dask scheduler ──sbatch/scancel (REST)──▶ slurmrestd
+                       │           │  ▲ :8786 (TLS)                                        │
+                       └──▶ Prefect│  └──────────────────────── Dask workers (Slurm jobs) ◀─┘
+                                   │ SOCKS 127.0.0.1:<port>          ▲ internal network
+                     workspace sshd◀──── SSH tunnel (-R) ──── gateway job (Slurm job)
 ```
 
 Status: prototype (RS-DAT catalogue item for HPC-DAT). Tested on Ubuntu 24.04 in a container, against a single-node Slurm 25.05 test cluster (see [Testing](#testing)). It has not yet been tested on a real Research Cloud workspace or a production cluster.
@@ -24,7 +22,7 @@ Status: prototype (RS-DAT catalogue item for HPC-DAT). Tested on Ubuntu 24.04 in
 
 1. Create an Ansible component in the Research Cloud portal pointing to this repository, playbook `rsdat.yml`.
 2. In the catalogue item, put the **SRC-Nginx** component (and SRC-External/SRAM as usual) **before** this one.
-3. Set the component parameters (below). The required ones are `rsdat_slurm_api_url` and the worker environment: `rsdat_dask_worker_image` or `rsdat_dask_worker_python`. On Snellius, also set `rsdat_dask_worker_network: 172.18.0.0/16` (internal network).
+3. Set the component parameters (below). The required ones are `rsdat_slurm_api_url` and the worker environment: `rsdat_dask_worker_image` or `rsdat_dask_worker_python`. On Snellius, also set `rsdat_dask_worker_network: 172.18.0.0/16` (internal network), and allow TCP 8786 into the workspace from the compute nodes' egress addresses.
 
 Locally, on an Ubuntu machine with SRC-Nginx:
 
@@ -52,13 +50,16 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_job_extra_directives` | `[]` | Extra `#SBATCH` options, e.g. `["--constraint=a100"]` |
 | `rsdat_dask_log_directory` | `$HOME/.rsdat/dask-logs` | Directory on the cluster for worker logs, one file per job. The job creates it, so nothing needs to be set up on the cluster |
 | `rsdat_dask_job_directory` | `""` (Slurm user's home) | Working directory of the worker jobs on the cluster, created by the job if missing |
-| `rsdat_dask_scheduler_location` | `cluster` | Where the Dask scheduler runs: `cluster` (a Slurm job that opens an SSH tunnel to the workspace) or `workspace` (in JupyterLab; needs connections in both directions). See [Networking](#networking) |
+| `rsdat_dask_scheduler_location` | `workspace` | Where the Dask scheduler runs: `workspace` (in JupyterLab) or `cluster` (a Slurm job that opens an SSH tunnel to the workspace). See [Networking](#networking) |
+| `rsdat_dask_worker_route` | `gateway` | Scheduler on the workspace: how it reaches the workers, `gateway` (through a gateway job's SSH tunnel) or `direct` |
+| `rsdat_dask_gateway_cores`, `rsdat_dask_gateway_memory`, `rsdat_dask_gateway_walltime` | `1`, `1GiB`, `12:00:00` | Gateway job; partition and account as the workers. Resubmitted when it ends while clusters use it |
+| `rsdat_dask_gateway_job_extra_directives` | `[]` | Extra `#SBATCH` options for the gateway job |
 | `rsdat_dask_worker_network` | `""` | Network (CIDR) the workers (and a scheduler on the cluster) listen on and advertise, e.g. `172.18.0.0/16` on Snellius. Each job picks its node's address in this network when it starts |
 | `rsdat_dask_scheduler_cores`, `rsdat_dask_scheduler_memory`, `rsdat_dask_scheduler_walltime` | `1`, `2GiB`, `12:00:00` | Scheduler job (scheduler on the cluster); partition and account as the workers. The cluster ends with this job |
 | `rsdat_dask_scheduler_job_extra_directives` | `[]` | Extra `#SBATCH` options for the scheduler job |
-| `rsdat_dask_scheduler_start_timeout` | `900` | Seconds a new cluster waits for the scheduler job to start and the tunnel to open |
-| `rsdat_dask_tunnel_host`, `rsdat_dask_tunnel_port` | `rsdat_fqdn`, `22` | SSH server on the workspace that the scheduler job's tunnel goes to |
-| `rsdat_dask_tunnel_give_up` | `600` | The scheduler job stops after this many seconds without a tunnel |
+| `rsdat_dask_scheduler_start_timeout` | `900` | Seconds a new cluster waits for the scheduler or gateway job to start and its tunnel to open |
+| `rsdat_dask_tunnel_host`, `rsdat_dask_tunnel_port` | `rsdat_fqdn`, `22` | SSH server on the workspace that the gateway's or scheduler's tunnel goes to |
+| `rsdat_dask_tunnel_give_up` | `600` | The gateway or scheduler job stops after this many seconds without a tunnel |
 | `rsdat_dask_worker_port`, `rsdat_dask_nanny_port` | `40000:40099`, `40100:40199` | Fixed port ranges for workers and nannies, so a firewall can allow them (`""` = random) |
 | `rsdat_dask_scheduler_port` | `8786` | Scheduler on the workspace: port the workers use to reach it |
 | `rsdat_dask_scheduler_host` | `0.0.0.0` | Scheduler on the workspace: address it listens on |
@@ -105,7 +106,7 @@ cluster.scale(jobs=4)           # or cluster.adapt(maximum_jobs=10)
 client = Client(cluster)
 ```
 
-`RSDATSLURMCluster` is dask-jobqueue's `SLURMCluster`, adapted to a workspace that shares no network or filesystem with the cluster. The Dask sidebar uses it too. By default (`rsdat_dask_scheduler_location: cluster`) creating it submits the scheduler job and waits until the scheduler is reachable through the tunnel, which takes as long as the job waits in the queue. `cluster.scheduler_address` is then `tls://127.0.0.1:<port>` on the workspace, and `cluster.dashboard_link` points at the dashboard through JupyterLab. `cluster.close()` cancels the scheduler and worker jobs. Plain `SLURMCluster()` doesn't work here: it runs the scheduler on the workspace and doesn't send the certificates to the jobs.
+`RSDATSLURMCluster` is dask-jobqueue's `SLURMCluster`, adapted to a workspace that shares no network or filesystem with the cluster. The Dask sidebar uses it too. By default the scheduler runs in this JupyterLab and the first cluster also submits the gateway job, and waits until its tunnel is open (as long as the job waits in the queue). `cluster.close()` cancels the worker jobs, and the gateway job when no other cluster in the same process uses it. Plain `SLURMCluster()` doesn't work here: it doesn't send the certificates to the jobs and can't reach the workers.
 
 Any setting can be overridden per cluster, e.g. `RSDATSLURMCluster(cores=16, memory="32GiB", queue="genoa")`. `sbatch`, `squeue` and `scancel` also work in the JupyterLab terminal.
 
@@ -133,33 +134,49 @@ Dask needs connections in **both** directions between the scheduler and its work
 
 Each worker job runs two processes, each with its own port: the **nanny**, a small supervisor that starts the worker process and restarts it when it crashes or exceeds its memory limit, and the **worker** itself. The scheduler connects to both: to the worker for data and `client.run`, and to the nanny to restart or stop the worker.
 
-`rsdat_dask_scheduler_location` picks where the scheduler runs.
+Three set-ups, with `rsdat_dask_scheduler_location` and `rsdat_dask_worker_route`:
 
-### Scheduler on the cluster (default)
+| | Scheduler | Scheduler → workers | Cluster firewall | Workspace firewall |
+|---|---|---|---|---|
+| **Gateway** (default) | in JupyterLab | through the gateway job's SSH tunnel | nothing | 8786 and SSH from the compute nodes |
+| **Scheduler on the cluster** | Slurm job | inside the cluster | nothing | SSH from the compute nodes |
+| **Direct** | in JupyterLab | directly | workspace → workers' ports | 8786 from the compute nodes |
 
-The scheduler is a Slurm job next to the workers, so all Dask traffic stays inside the cluster. Only the notebook (and the Dask sidebar and dashboard) on the workspace needs the scheduler, and it reaches it through an SSH tunnel that the scheduler job opens to the workspace:
+None of them logs in to the cluster with SSH (which on Snellius needs MFA): the workspace only uses the Slurm REST API, and where SSH is used, a job on the cluster connects to the workspace.
+
+### Gateway (default)
+
+`rsdat_dask_scheduler_location: workspace`, `rsdat_dask_worker_route: gateway`. The scheduler runs in JupyterLab, so it doesn't wait in the queue, isn't limited by a walltime and uses no budget; only the workers are jobs.
+
+- **Workers → scheduler:** directly, to `rsdat_dask_contact_host:rsdat_dask_scheduler_port` (TCP 8786, TLS). The workspace's security group must allow this port from the compute nodes' egress addresses.
+- **Scheduler → workers:** the workers listen on the cluster's internal network (`rsdat_dask_worker_network`, `172.18.0.0/16` on Snellius), where they also reach each other. The workspace can't reach that network, so:
+  1. With its first cluster, a JupyterLab process submits a **gateway job**: `ssh -N -R 127.0.0.1:<port> rsdat@<workspace>`, OpenSSH's reverse dynamic forward. On the workspace, `127.0.0.1:<port>` is then a SOCKS proxy that connects from the gateway's node.
+  2. In that process, Dask's connections to addresses in the worker network go through the proxy; everything else connects directly. TLS runs end to end through it. No root, iptables or extra software on the workspace.
+  3. The gateway is shared by the process's clusters, resubmitted when it ends while they use it (e.g. at its walltime, `rsdat_dask_gateway_walltime`), and cancelled with the last cluster. While it's being resubmitted, the scheduler can't reach the workers: results and restarts wait, but the workers stay registered (they connect to the scheduler themselves).
+- Notebooks that connect with `Client("tls://…:8786")` from another kernel talk to the scheduler only, so they need no gateway. `client.run` and `gather` go through the scheduler too.
+- Traffic between the scheduler and the workers (task results, data the notebook gathers) goes through one SSH connection on the gateway's node.
+
+### Scheduler on the cluster
+
+`rsdat_dask_scheduler_location: cluster`. The scheduler is a Slurm job next to the workers, so all Dask traffic stays inside the cluster. Only the notebook (and the Dask sidebar and dashboard) on the workspace needs the scheduler, and it reaches it through an SSH tunnel that the scheduler job opens to the workspace:
 
 1. `RSDATSLURMCluster()` picks two free ports on the workspace's `127.0.0.1` and submits the scheduler job over REST.
 2. The job starts the scheduler on the node's address in `rsdat_dask_worker_network`, then runs `ssh -N -R 127.0.0.1:<port>:<scheduler> -R 127.0.0.1:<port>:<dashboard> rsdat@<workspace>`. The tunnel is restarted when it drops.
 3. The notebook connects to `tls://127.0.0.1:<port>`. Worker jobs get the scheduler's address in the cluster.
 
-So the workspace only connects to the Slurm REST API, and the compute nodes only connect out to the workspace's SSH port (`rsdat_dask_tunnel_port`, 22). No firewall changes on the cluster side.
-- Scheduler and workers must listen on a network the compute nodes share. On Snellius that's the internal network (`rsdat_dask_worker_network: 172.18.0.0/16`). The public VLAN (145.136.56.0/21) only reaches the outside, not other compute nodes. InfiniBand (172.22.0.0/16) should also work but wasn't tested.
 - The scheduler job uses `rsdat_dask_scheduler_cores`/`_memory`/`_walltime` in the workers' partition and account. When it ends, the workers stop too (after their death timeout), so give it the longest walltime you need. It also stops when it can't open the tunnel for `rsdat_dask_tunnel_give_up` seconds, e.g. when the workspace is gone.
-- The workspace's SSH server must accept key logins for `rsdat_user` from the compute nodes.
-- Checked on Snellius: rome nodes reach each other by hostname (internal Ethernet) and reach a Research Cloud workspace on port 22.
+- Creating a cluster waits for the scheduler job in the queue.
 
-### Scheduler on the workspace
+### Direct
 
-The scheduler runs in JupyterLab (`rsdat_dask_scheduler_location: workspace`). This needs:
+`rsdat_dask_scheduler_location: workspace`, `rsdat_dask_worker_route: direct`. The scheduler runs in JupyterLab and connects to the workers itself. Besides 8786 into the workspace, the cluster firewall must allow the workspace to reach the workers' and nannies' ports (fixed ranges `40000:40099` and `40100:40199`) on `rsdat_dask_worker_network`. Doesn't work on Snellius: its firewall blocks the workspace from the compute nodes.
 
-**Workers → scheduler.** Workers connect to `rsdat_dask_contact_host:rsdat_dask_scheduler_port` (TCP 8786 by default). The workspace's security group must allow this port from the compute nodes' addresses.
-- The scheduler listens on `rsdat_dask_scheduler_host` (default all interfaces).
-- If the workspace has a private IP behind a floating/NAT address, set `rsdat_dask_contact_host` to the public name or IP. dask-jobqueue always gives workers the scheduler's listening address, and distributed's `contact_address` option for the scheduler has no effect (checked with distributed 2026.8.0), hence `RSDATSLURMCluster`.
+### Common to all
 
-**Scheduler → workers.** The scheduler and the notebook client connect to the address each worker advertises: the node's address in `rsdat_dask_worker_network`, picked by network when the job starts (interface names differ per node type). Workers and nannies use fixed port ranges (`40000:40099` and `40100:40199`) that the cluster firewall must allow from the workspace. The workers must also reach each other on that network.
-
-On Snellius this mode doesn't work: the firewall blocks the workspace from the compute nodes, and compute nodes can't reach each other over the public VLAN.
+- The worker network is picked by network, not interface name, because names differ per node type. Each job uses the node's address in `rsdat_dask_worker_network`, and stops with an error if the node has none.
+- On Snellius the public VLAN (145.136.56.0/21) only reaches the outside, not other compute nodes; use the internal network `172.18.0.0/16`. InfiniBand (172.22.0.0/16) should work as well but wasn't tested. Checked on Snellius: rome nodes reach each other by hostname (internal Ethernet) and reach a Research Cloud workspace on port 22, and workers reach a scheduler on the workspace on 8786.
+- With the gateway or the scheduler on the cluster, the workspace's SSH server must accept key logins for `rsdat_user` from the compute nodes (`rsdat_dask_tunnel_host:rsdat_dask_tunnel_port`).
+- If the workspace has a private IP behind a floating/NAT address, `rsdat_dask_contact_host` must be its public name or IP (default: `rsdat_fqdn`). dask-jobqueue always gives workers the scheduler's listening address, and distributed's `contact_address` option for the scheduler has no effect (checked with distributed 2026.8.0), hence `RSDATSLURMCluster`.
 
 ## Security notes
 
@@ -170,7 +187,9 @@ On Snellius this mode doesn't work: the firewall blocks the workspace from the c
   - `Client("tls://…")` in notebooks, including the Dask sidebar's snippet, picks up the certificate from the Dask config. Plain `SLURMCluster()` doesn't send the certificate to the workers, so use `RSDATSLURMCluster`.
   - To create a new certificate, delete the directory, rerun the playbook and restart running clusters.
 
-- **SSH tunnel key** (scheduler on the cluster). The playbook creates a key in `~rsdat/.config/rsdat/dask-tunnel` and allows it in `~rsdat/.ssh/authorized_keys` with `restrict,port-forwarding,permitlisten="127.0.0.1:*",command="/bin/false"`. Because `port-forwarding` also re-enables `-L`, `/etc/ssh/sshd_config.d/rsdat-dask-tunnel.conf` limits `rsdat` to remote forwarding (`AllowTcpForwarding remote`, `PermitListen 127.0.0.1:*`); the playbook checks with `sshd -T` that the SSH server applies it. So the key can only open listening ports on the workspace's `127.0.0.1`: no shell, no connections into the workspace or its network, no agent or X11. `rsdat` is meant only for this: don't use it for interactive SSH logins. The scheduler job gets the key, and the workspace's host key for `known_hosts`, in its job script, like the certificates. Someone with the key could open a port on the workspace's `127.0.0.1` and wait for connections; Dask clients only talk to it with the workspace's TLS certificate, which is in the same job script.
+- **SSH tunnel key** (gateway, scheduler on the cluster). The playbook creates a key in `~rsdat/.config/rsdat/dask-tunnel` and allows it in `~rsdat/.ssh/authorized_keys` with `restrict,port-forwarding,permitlisten="127.0.0.1:*",command="/bin/false"`. Because `port-forwarding` also re-enables `-L`, `/etc/ssh/sshd_config.d/rsdat-dask-tunnel.conf` limits `rsdat` to remote forwarding (`AllowTcpForwarding remote`, `PermitListen 127.0.0.1:*`); the playbook checks with `sshd -T` that the SSH server applies it. So the key can only open listening ports on the workspace's `127.0.0.1`: no shell, no connections into the workspace or its network, no agent or X11. `rsdat` is meant only for this: don't use it for interactive SSH logins. The gateway or scheduler job gets the key, and the workspace's host key for `known_hosts`, in its job script, like the certificates. Someone with the key could open a port on the workspace's `127.0.0.1` and wait for connections; Dask clients only talk to it with the workspace's TLS certificate, which is in the same job script.
+
+- **Gateway proxy.** The gateway's SOCKS proxy on the workspace's `127.0.0.1` has no authentication and connects to anything the gateway's node can reach (OpenSSH's `PermitRemoteOpen` can't be limited to a network). Dask only sends connections to the worker network through it, but any process on the workspace could use it to reach the cluster's network, as network traffic from that node, not as your Slurm user. Dask itself stays protected by TLS. On a workspace where others have a shell, use the scheduler on the cluster instead.
 
 - JupyterLab runs as one user (`rsdat`) for the whole workspace. Its own login is disabled because SRC-Nginx does the SRAM login. It listens on `127.0.0.1` only. Everyone in the CO who can open the workspace shares this JupyterLab and its Slurm token. For per-user sessions, use JupyterHub instead (follow-up).
 - A token given as `rsdat_slurm_jwt` is stored in `/etc/rsdat/slurm.env`, readable only by root and the `rsdat` group.
@@ -183,11 +202,12 @@ On Snellius this mode doesn't work: the firewall blocks the workspace from the c
 # once: build the Slurm test image (in a clone of the proxy client repo)
 docker build -t slurm-cli-proxy-test testing/slurm-container
 
-tests/run.sh                       # scheduler on the cluster; KEEP=1 to keep the containers
-SCHEDULER=workspace tests/run.sh   # scheduler in JupyterLab
+tests/run.sh                       # gateway (default); KEEP=1 to keep the containers
+SCHEDULER=cluster tests/run.sh     # scheduler on the cluster
+ROUTE=direct tests/run.sh          # scheduler in JupyterLab, direct connections
 ```
 
-With the scheduler on the cluster, the test blocks every connection from the workspace to the Slurm container except to slurmrestd, as the Snellius firewall does.
+With the gateway or the scheduler on the cluster, the test blocks every connection from the workspace to the Slurm container except to slurmrestd, as the Snellius firewall does.
 
 The checks:
 - A second playbook run changes nothing.
@@ -196,12 +216,14 @@ The checks:
 - The Prefect UI, its assets and the API work under `/prefect/`, and a flow runs against the server.
 - `sbatch`, `squeue` and `scancel` work through the REST API.
 - `RSDATSLURMCluster()` with the workspace defaults starts two workers on Slurm, over TLS, with the certificates shipped in the job script, listening in the worker network on the fixed port ranges.
+  - Gateway: the workers connect through the contact host, and the scheduler reaches them through the gateway job.
   - Scheduler on the cluster: the scheduler job's tunnel answers on `127.0.0.1` of the workspace, and the workers get the scheduler's address in the cluster.
-  - Scheduler on the workspace: the workers connect through the contact host.
-- The workers compute a result, `client.restart()` works (the scheduler reaches the nannies), the dashboard answers through the tunnel, and all jobs are cancelled on close.
+  - Direct: the workers connect through the contact host.
+- The workers compute a result, `client.restart()` works (the scheduler reaches the nannies), the dashboard answers (through the tunnel when the scheduler is on the cluster), and all jobs, including the gateway, are cancelled on close.
 - A client that only knows the scheduler address connects with TLS from the config, and a plain `tcp://` client is refused.
 - The Dask extension creates a cluster and scales it to one worker.
 - JupyterLab comes back after a restart.
 - The jobs write their logs to `~/.rsdat/dask-logs` on the cluster and leave no certificates or keys on the node.
+- The tunnel key can't open a shell, `-L` forwards or `-R` on other addresses than `127.0.0.1`.
 
 Not covered: the worker image (the test cluster has no Apptainer; the workflow builds and checks the image), and real networks and SSH server settings of a Research Cloud workspace.

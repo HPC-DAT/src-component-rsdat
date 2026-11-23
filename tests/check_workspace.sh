@@ -114,8 +114,8 @@ cluster.close()
 print("OK")
 PY
 chmod 644 /tmp/dask_check.py
-check "RSDATSLURMCluster with workspace defaults (scheduler on the ${RSDAT_EXPECT_SCHEDULER:-workspace}, 2 workers, worker network, restart, dashboard)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_EXPECT_WORKER_NET=${RSDAT_EXPECT_WORKER_NET:-} RSDAT_EXPECT_CONTACT_HOST=${RSDAT_EXPECT_CONTACT_HOST:-} RSDAT_EXPECT_SCHEDULER=${RSDAT_EXPECT_SCHEDULER:-}; cd ~ && timeout 420 python /tmp/dask_check.py"
-check "Dask jobs (workers, scheduler) cancelled after close" as_user 'sleep 5; ! squeue | grep -q " R .*dask-\| PD .*dask-"'
+check "RSDATSLURMCluster with workspace defaults (scheduler on the ${RSDAT_EXPECT_SCHEDULER:-workspace}$([ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && echo ", route ${RSDAT_EXPECT_ROUTE:-direct}"), 2 workers, worker network, restart, dashboard)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_EXPECT_WORKER_NET=${RSDAT_EXPECT_WORKER_NET:-} RSDAT_EXPECT_CONTACT_HOST=${RSDAT_EXPECT_CONTACT_HOST:-} RSDAT_EXPECT_SCHEDULER=${RSDAT_EXPECT_SCHEDULER:-}; cd ~ && timeout 420 python /tmp/dask_check.py"
+check "Dask jobs (workers, scheduler/gateway) cancelled after close" as_user 'sleep 5; ! squeue | grep -q " R .*dask-\| PD .*dask-"'
 
 # Dask extension: create a cluster through the JupyterLab extension API (the "New" button)
 cat > /tmp/labext_check.sh <<'SH'

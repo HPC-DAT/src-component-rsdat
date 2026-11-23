@@ -39,12 +39,26 @@ rsdat_dask_local_directory: "${TMPDIR:-/tmp}"
 # --- Networking between the scheduler (in JupyterLab on this workspace) and the workers on
 # the cluster (see README, "Networking") ---
 # Where the Dask scheduler runs:
+# - "workspace": in JupyterLab here. Workers connect to it on rsdat_dask_scheduler_port; how it
+#   reaches the workers is set by rsdat_dask_worker_route.
 # - "cluster": as a Slurm job next to the workers; it opens a reverse SSH tunnel to this
 #   workspace (port rsdat_dask_tunnel_port), which notebooks connect through. Only the cluster
-#   opens connections: works when the workspace can't reach the compute nodes.
-# - "workspace": in JupyterLab here. Needs connections in both directions: compute nodes to
-#   the workspace on rsdat_dask_scheduler_port, and the workspace to the workers' ports.
-rsdat_dask_scheduler_location: cluster
+#   opens connections.
+rsdat_dask_scheduler_location: workspace
+# Scheduler on the workspace: how it reaches the workers
+# - "gateway": through a small gateway job on the cluster that opens a reverse SSH tunnel to
+#   this workspace (a SOCKS proxy into rsdat_dask_worker_network). For when the workspace
+#   can't connect to the compute nodes (Snellius).
+# - "direct": directly; the cluster firewall must allow the workspace to reach the workers.
+rsdat_dask_worker_route: gateway
+
+# --- gateway job (scheduler on the workspace, worker route "gateway") ---
+# Resources (partition and account: as the workers). One gateway per JupyterLab process,
+# shared by its clusters; resubmitted when it ends while clusters use it.
+rsdat_dask_gateway_cores: 1
+rsdat_dask_gateway_memory: "1GiB"
+rsdat_dask_gateway_walltime: "12:00:00"
+rsdat_dask_gateway_job_extra_directives: []
 
 # --- scheduler on the cluster ---
 # Resources of the scheduler job (partition and account: as the workers). The cluster's
@@ -53,14 +67,17 @@ rsdat_dask_scheduler_cores: 1
 rsdat_dask_scheduler_memory: "2GiB"
 rsdat_dask_scheduler_walltime: "12:00:00"
 rsdat_dask_scheduler_job_extra_directives: []
-# How long a new cluster waits for the scheduler job to start and the tunnel to open (seconds)
+# How long a new cluster waits for the scheduler (or gateway) job to start and its tunnel to
+# open (seconds)
 rsdat_dask_scheduler_start_timeout: 900
-# The scheduler job stops when it can't open the tunnel for this long (seconds)
+# The scheduler (or gateway) job stops when it can't open its tunnel for this long (seconds)
 rsdat_dask_tunnel_give_up: 600
+
+# --- SSH tunnel from the cluster to this workspace (scheduler on the cluster, or gateway) ---
 # SSH server the tunnel goes to: this workspace, reachable from the compute nodes
 rsdat_dask_tunnel_host: "{{ rsdat_fqdn }}"
 rsdat_dask_tunnel_port: 22
-# Key the scheduler job logs in with (as rsdat_user). It may only open listening ports on
+# Key the jobs log in with (as rsdat_user). It may only open listening ports on
 # 127.0.0.1 of this workspace (authorized_keys options); no shell, no other forwarding.
 rsdat_dask_tunnel_dir: "{{ rsdat_home }}/.config/rsdat/dask-tunnel"
 rsdat_dask_tunnel_host_key: /etc/ssh/ssh_host_ed25519_key.pub
@@ -81,10 +98,10 @@ rsdat_dask_dashboard_port: 8787
 rsdat_dask_tls: true
 rsdat_dask_tls_dir: "{{ rsdat_home }}/.config/rsdat/dask-tls"
 
-# Network (CIDR) the workers (and a scheduler on the cluster) listen on and advertise.
-# Scheduler on the cluster: the cluster's internal network, e.g. "172.18.0.0/16" on Snellius
-# (the public VLAN doesn't connect compute nodes to each other). Scheduler on the workspace:
-# the compute nodes' addresses that the workspace can reach.
+# Network (CIDR) the workers (and a scheduler on the cluster) listen on and advertise: one the
+# compute nodes share, e.g. the internal network "172.18.0.0/16" on Snellius (the public VLAN
+# doesn't connect compute nodes to each other). With the gateway, the scheduler reaches this
+# network through the gateway job; with route "direct", the workspace must reach it.
 # Interface names differ between node types, so the address is chosen by network when the job
 # starts. "" = Dask's default (the interface of the node's default route).
 rsdat_dask_worker_network: ""

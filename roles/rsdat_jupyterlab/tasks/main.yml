@@ -12,6 +12,15 @@
     that: rsdat_dask_scheduler_location in ['cluster', 'workspace']
     fail_msg: "rsdat_dask_scheduler_location must be 'cluster' or 'workspace'"
 
+- name: Check worker route
+  ansible.builtin.assert:
+    that:
+      - rsdat_dask_worker_route in ['gateway', 'direct']
+      - rsdat_dask_scheduler_location == 'cluster' or rsdat_dask_worker_route == 'direct' or rsdat_dask_worker_network | length > 0
+    fail_msg: >-
+      rsdat_dask_worker_route must be 'gateway' or 'direct'; the gateway needs
+      rsdat_dask_worker_network (the workers' network, e.g. 172.18.0.0/16 on Snellius).
+
 - name: Check worker network
   when: rsdat_dask_worker_network | length > 0
   ansible.builtin.assert:
@@ -67,9 +76,9 @@
     mode: "0600"
   loop: [ca.pem, dask.pem, dask.key]
 
-# Scheduler on the cluster: the scheduler job opens a reverse SSH tunnel to this workspace
+# Scheduler on the cluster, or gateway: a job opens a reverse SSH tunnel to this workspace
 - name: SSH server for the Dask tunnel
-  when: rsdat_dask_scheduler_location == 'cluster'
+  when: rsdat_dask_scheduler_location == 'cluster' or rsdat_dask_worker_route == 'gateway'
   block:
     - name: Install OpenSSH server
       ansible.builtin.apt:
