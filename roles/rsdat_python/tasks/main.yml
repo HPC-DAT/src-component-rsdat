@@ -29,11 +29,12 @@
   ansible.builtin.pip:
     name: "uv=={{ rsdat_uv_version }}"
     virtualenv: "{{ rsdat_uv_dir }}"
-    virtualenv_command: python3 -m venv
+    virtualenv_command: /usr/bin/python3 -m venv
+    umask: "0022"
 
 - name: Python version of the OS
   ansible.builtin.command:
-    cmd: python3 -c 'import sys; print(sys.version.split()[0])'
+    cmd: /usr/bin/python3 -c 'import sys; print(sys.version.split()[0])'
   register: rsdat_os_python
   changed_when: false
 
@@ -48,22 +49,28 @@
       the workers (cloudpickle) can break when these differ. Use Ubuntu 24.04, or build a worker
       image on this OS and set worker-image/python-version accordingly.
 
-- name: Python version of the environment
-  ansible.builtin.command:
-    cmd: "{{ rsdat_venv }}/bin/python -c 'import sys; print(sys.version.split()[0])'"
+# Always Ubuntu's Python: "python3" on root's PATH can be another one (on SRC workspaces e.g. a
+# uv-managed Python in /root/.local, which rsdat can't use)
+- name: Python of the environment
+  ansible.builtin.shell:
+    cmd: "readlink -f {{ rsdat_venv }}/bin/python && {{ rsdat_venv }}/bin/python -c 'import sys; print(sys.version.split()[0])'"
   register: rsdat_venv_python
   changed_when: false
   failed_when: false
 
 - name: Remove an environment with another Python version
-  when: rsdat_venv_python.rc != 0 or rsdat_venv_python.stdout != rsdat_python_version
+  when: >-
+    rsdat_venv_python.rc != 0 or not rsdat_venv_python.stdout_lines[0].startswith('/usr/')
+    or rsdat_venv_python.stdout_lines[-1] != rsdat_python_version
   ansible.builtin.file:
     path: "{{ rsdat_venv }}"
     state: absent
 
+# The environment must be readable for rsdat (the services) and the users, whatever umask the
+# playbook runs with (SRC: 077), hence umask 022 for everything that writes into it
 - name: Create the environment
-  ansible.builtin.command:
-    cmd: "{{ rsdat_uv_dir }}/bin/uv venv --python /usr/bin/python3 {{ rsdat_venv }}"
+  ansible.builtin.shell:
+    cmd: "umask 022 && {{ rsdat_uv_dir }}/bin/uv venv --python /usr/bin/python3 {{ rsdat_venv }}"
     creates: "{{ rsdat_venv }}/bin/python"
   environment: &rsdat_uv_env
     UV_CACHE_DIR: /var/cache/rsdat-uv
@@ -98,11 +105,20 @@
         mode: "0644"
 
 - name: Install the environment from the lock file (exact versions, nothing else)
-  ansible.builtin.command:
+  ansible.builtin.shell:
     cmd: >-
-      {{ rsdat_uv_dir }}/bin/uv pip sync --python {{ rsdat_venv }}/bin/python
+      umask 022 && {{ rsdat_uv_dir }}/bin/uv pip sync --python {{ rsdat_venv }}/bin/python
       {{ (rsdat_config_dir ~ '/environment.lock') if rsdat_extra_pip_packages | length > 0
          else rsdat_environment_lock }}
   environment: *rsdat_uv_env
   register: rsdat_sync
   changed_when: "'Installed' in rsdat_sync.stderr or 'Uninstalled' in rsdat_sync.stderr"
+
+# also repairs an environment installed with a stricter umask by an earlier version
+- name: Make the environment readable for the services and users
+  ansible.builtin.shell:
+    cmd: >-
+      if [ -n "$(find {{ rsdat_venv }} {{ rsdat_uv_dir }} \( ! -perm -o+r -o \( -type d ! -perm -o+x \) \) -print -quit)" ];
+      then chmod -R go+rX {{ rsdat_venv }} {{ rsdat_uv_dir }} && echo fixed; fi
+  register: rsdat_venv_perms
+  changed_when: "'fixed' in rsdat_venv_perms.stdout"
