@@ -15,5 +15,9 @@ msgpack==1.2.4
 tornado==6.6.1
 toolz==1.2.0
 numpy==2.5.5
+# Prefect tasks on the Dask workers (prefect_dask.DaskTaskRunner); the workspace's Prefect
+# server version (rsdat_prefect_version) must be the same
+prefect==3.9.0
+prefect-dask==0.3.7
 # TLS between scheduler and workers
 cryptography==50.0.2

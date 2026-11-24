@@ -21,6 +21,8 @@ check "Prefect UI and assets under /prefect/" bash -c '
     asset=$(echo "$html" | grep -oE "(src|href)=\"/prefect/[^\"]+\.(js|css)\"" | head -1 | cut -d\" -f2)
     [ -n "$asset" ] || { echo "no /prefect/ assets in UI page"; exit 1; }
     curl -fs -o /dev/null "http://localhost$asset"'
+# (the UI build must be in the service user's directory: the environment is root's)
+check "Prefect UI served by the server itself under /prefect/, built in ~rsdat/.prefect" bash -c 'curl -fs http://127.0.0.1:4200/prefect/ | grep -q "/prefect/" && test -d /home/rsdat/.prefect/ui-build'
 cat > /tmp/prefect_check.py <<'PY'
 from prefect import flow
 

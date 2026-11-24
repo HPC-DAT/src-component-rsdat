@@ -113,6 +113,8 @@ Any setting can be overridden per cluster, e.g. `RSDATSLURMCluster(cores=16, mem
 
 **Prefect.** The UI is at `https://<workspace>/prefect/`. Flows run from notebooks report to this server (`PREFECT_API_URL` is set in JupyterLab).
 
+To run work on the Dask cluster from a flow, use the Dask client inside the flow (`distributed.get_client()`, `client.map`, ...). `prefect_dask.DaskTaskRunner` is installed (workspace and worker image), but doesn't work yet: Prefect tasks then run on the workers and report their state to the Prefect API, which the workers can't reach (it listens on the workspace's `127.0.0.1`).
+
 ## Worker environment
 
 Scheduler (workspace) and workers exchange functions and data with cloudpickle and msgpack. Python's minor version and the versions of dask, distributed, cloudpickle, msgpack, tornado, toolz and numpy must therefore be identical on both sides. A mismatch breaks in confusing ways.
