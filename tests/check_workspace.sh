@@ -36,7 +36,10 @@ print("flow ran against", __import__("prefect").settings.PREFECT_API_URL.value()
 PY
 chmod 644 /tmp/prefect_check.py
 PREFECT_ENV="set -a; . /etc/rsdat/prefect-client.env; set +a"
-check "Prefect API refuses requests without the password" bash -c '[ "$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{}" http://localhost/prefect/api/flows/filter)" = 401 ]'
+check "Prefect machine API (/prefect/machine-api/) refuses requests without the password" bash -c '[ "$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{}" http://localhost/prefect/machine-api/flows/filter)" = 401 ]'
+check "Prefect machine API accepts the password" bash -c '. /etc/rsdat/prefect-client.env; [ "$(curl -s -o /dev/null -w "%{http_code}" -u "$PREFECT_API_AUTH_STRING" -X POST -H "Content-Type: application/json" -d "{}" http://localhost/prefect/machine-api/flows/filter)" = 200 ]'
+check "Prefect API for the browser (/prefect/api/): after the SRAM login without the password (nginx adds it)" bash -c '[ "$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{}" http://localhost/prefect/api/flows/filter)" = 200 ]'
+check "Prefect UI doesn't ask for the password behind the SRAM login" bash -c 'curl -fs http://localhost/prefect/ui-settings | tee /dev/stderr | grep -q "\"auth\":null" && curl -fs http://127.0.0.1:4200/prefect/ui-settings | grep -q "\"auth\":\"BASIC\""'
 check "Prefect flow runs against the server (JupyterLab environment)" as_user "$PREFECT_ENV; $VENV/bin/python /tmp/prefect_check.py"
 check "Start-here notebook in the home directory, opened on /jupyter/" bash -c 'test -s /home/rsdat/RS-DAT-start-here.ipynb && curl -s -o /dev/null -w "%{redirect_url}" http://localhost/jupyter/ | grep -q "lab/tree/RS-DAT-start-here.ipynb"'
 check "New terminals show the Slurm token's state" as_user 'script -qc "bash -li -c exit" /dev/null | grep -q "Slurm token for testuser, valid until"'
