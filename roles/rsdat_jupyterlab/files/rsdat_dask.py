@@ -147,6 +147,16 @@ def ship_worker_security(security, private_dir=True):
 
 
 class RSDATSLURMJob(SLURMJob):
+    async def start(self):
+        try:
+            await super().start()
+        except RuntimeError as e:
+            message = _refused_hint(self, e)
+            # scaling runs in the background: also log it where a notebook shows it ("distributed"
+            # logs to the kernel's stderr); the Dask sidebar only shows the worker count
+            logging.getLogger("distributed.deploy").error("%s", message)
+            raise RuntimeError(message) from None
+
     def __init__(self, scheduler=None, name=None, security=None, job_script_prologue=None, **kwargs):
         if job_script_prologue is None:
             job_script_prologue = dask.config.get(
@@ -231,16 +241,26 @@ def _slurm_api_url():
     return url or os.environ.get("PROXY_SLURM_API_URL") or "(not set)"
 
 
-def _slurm_hint(error):
+def _command_output(error):
+    """What a failed Slurm command printed, from dask-jobqueue's error message."""
     text = str(error)
     # dask-jobqueue's message for a failed command: keep what the command itself printed
     for marker in ("stderr:\n", "stdout:\n"):
         if marker in text and text.split(marker, 1)[1].strip():
             text = text.split(marker, 1)[1].split("stderr:\n")[0]
             break
-    detail = " ".join(l.strip() for l in text.splitlines() if l.strip())
-    return (f"The Slurm REST API at {_slurm_api_url()} didn't work: {detail[:500]}\n"
+    return " ".join(l.strip() for l in text.splitlines() if l.strip())[:500]
+
+
+def _slurm_hint(error):
+    return (f"The Slurm REST API at {_slurm_api_url()} didn't work: {_command_output(error)}\n"
             "Check the token (rsdat-slurm-token --status) and the API URL (rsdat_slurm_api_url).")
+
+
+def _refused_hint(job, error):
+    return (f"Slurm refused the {job.job_name or 'Dask'} job: {_command_output(error)}\n"
+            "Check the job settings: partition and account (rsdat_dask_queue, rsdat_dask_account, "
+            "or queue=/account= for this cluster), cores, memory and walltime.")
 
 
 async def _slurm_preflight():
@@ -261,7 +281,8 @@ async def _submit(job):
     except asyncio.TimeoutError:
         raise RuntimeError(_slurm_hint(f"sbatch didn't answer within {SLURM_CALL_TIMEOUT} s")) from None
     except RuntimeError as e:
-        raise RuntimeError(_slurm_hint(e)) from None
+        # the API answered (the cluster checked it first), so Slurm refused the job itself
+        raise RuntimeError(_refused_hint(job, e)) from None
 
 
 class RSDATSchedulerJob(SLURMJob):

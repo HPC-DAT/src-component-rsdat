@@ -119,6 +119,8 @@ client = Client(cluster)
 
 Any setting can be overridden per cluster, e.g. `RSDATSLURMCluster(cores=16, memory="32GiB", queue="genoa")`. `sbatch`, `squeue` and `scancel` also work in the JupyterLab terminal.
 
+**When a cluster doesn't start.** Creating a cluster first checks the Slurm REST API, then submits the gateway job: a wrong API URL or token, or a partition, account or resources that Slurm refuses, fail the creation with Slurm's reason, in the notebook and as the Dask sidebar's error. Worker jobs that Slurm refuses later, when scaling, don't fail the cluster: the reason is in the notebook's output (cluster made in a notebook) or in `journalctl -u rsdat-jupyterlab` (made in the sidebar), and the cluster just doesn't grow.
+
 **Prefect.** The UI is at `https://<workspace>/prefect/`. Flows run from notebooks report to this server (`PREFECT_API_URL` is set in JupyterLab).
 
 Prefect tasks can run on the Dask workers with `prefect_dask.DaskTaskRunner` (installed on the workspace and in the worker image):
