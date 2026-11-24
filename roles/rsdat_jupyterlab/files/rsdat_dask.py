@@ -574,10 +574,33 @@ class RSDATGatewayJob(SLURMJob):
 _ROUTES = {}            # ipaddress network -> SOCKS port on 127.0.0.1
 
 
+_LOCAL_IPS = None
+
+
+def _local_ips():
+    """This host's own addresses: connections to them (e.g. the client to the scheduler in this
+    JupyterLab) never go through the gateway, also when they lie in the worker network, so they
+    don't break when a gateway job is replaced."""
+    global _LOCAL_IPS
+    if _LOCAL_IPS is None:
+        import psutil
+        ips = set()
+        for addrs in psutil.net_if_addrs().values():
+            for a in addrs:
+                try:
+                    ips.add(ipaddress.ip_address(a.address.split("%")[0]))
+                except ValueError:
+                    pass
+        _LOCAL_IPS = ips
+    return _LOCAL_IPS
+
+
 def _socks_port_for(host):
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
+        return None
+    if ip.is_loopback or ip in _local_ips():
         return None
     for net, port in _ROUTES.items():
         if ip in net:
@@ -804,11 +827,19 @@ class _Gateway:
         logger.info("Gateway job %s replaced by %s (SOCKS on 127.0.0.1:%s)",
                     old_job.job_id, job.job_id, port)
         name = getattr(old_job, "rsdat_worker_name", None)
-        if name and self._retirers:
+        # retire the old gateway's worker: Dask moves its data to other workers first. If that
+        # can't be done (e.g. no other worker has room), try again until shortly before the
+        # walltime; what's left on it then is recomputed where possible
+        while name and self._retirers:
             try:
-                await asyncio.wait_for(self._retirers[0](name), 300)
-            except Exception:
-                logger.warning("Could not retire %s gracefully; its tasks are recomputed", name)
+                if await asyncio.wait_for(self._retirers[0](name), 300):
+                    break
+            except Exception as e:
+                logger.warning("Retiring %s: %s", name, e)
+            if time.time() >= end - 120:
+                logger.warning("Could not retire %s before its job's walltime", name)
+                break
+            await asyncio.sleep(30)
         if old_lease is not None:
             old_lease.close()
         await old_job.close()
@@ -939,8 +970,9 @@ class RSDATSLURMCluster(SLURMCluster):
             await _GATEWAY.release(self._retire_worker)
 
     async def _retire_worker(self, name):
-        """Retire a worker by name: the scheduler moves its data to other workers first."""
-        await self.scheduler_comm.retire_workers(names=[name], close_workers=True)
+        """Retire a worker by name: the scheduler moves its data to other workers first. Empty
+        when it couldn't (the worker keeps running)."""
+        return await self.scheduler_comm.retire_workers(names=[name], close_workers=True)
 
     def _get_worker_security(self, security):
         # dask-jobqueue would dump in-memory credentials to a shared directory and pass paths;
