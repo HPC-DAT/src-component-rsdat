@@ -25,11 +25,27 @@
     state: directory
     mode: "0755"
 
+# Always Ubuntu's Python: "python3" on root's PATH can be another one (on SRC workspaces e.g. a
+# uv-managed Python in /root/.local, which rsdat can't use). An environment made from another
+# Python (by an earlier version of this component) is made again.
+- name: Python of the environment
+  ansible.builtin.command:
+    cmd: "readlink -f {{ rsdat_venv }}/bin/python"
+  register: rsdat_venv_interpreter
+  changed_when: false
+  failed_when: false
+
+- name: Remove an environment made from another Python
+  when: rsdat_venv_interpreter.rc == 0 and not rsdat_venv_interpreter.stdout.startswith('/usr/')
+  ansible.builtin.file:
+    path: "{{ rsdat_venv }}"
+    state: absent
+
 # The environment must be readable for rsdat (the services) and the users, whatever umask the
 # playbook runs with (SRC: 077), hence umask 022 for everything that writes into it
 - name: Create virtual environment
   ansible.builtin.shell:
-    cmd: "umask 022 && python3 -m venv {{ rsdat_venv }}"
+    cmd: "umask 022 && /usr/bin/python3 -m venv {{ rsdat_venv }}"
     creates: "{{ rsdat_venv }}/bin/python"
 
 - name: Check the Python version of the environment
