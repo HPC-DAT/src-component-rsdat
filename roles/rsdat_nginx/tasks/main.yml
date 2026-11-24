@@ -62,13 +62,11 @@
       ansible.builtin.debug:
         msg: "nginx doesn't accept the redirect of / (left out): {{ rsdat_nginx_test.stderr }}"
 
-    - name: Check the nginx configuration again
+    - name: Stop if the nginx configuration is invalid without it too
       ansible.builtin.command: nginx -t
-      register: rsdat_nginx_test
       changed_when: false
-      failed_when: false
 
 - name: Stop if the nginx configuration is invalid
   ansible.builtin.fail:
     msg: "nginx -t fails: {{ rsdat_nginx_test.stderr }}"
-  when: rsdat_nginx_test.rc != 0
+  when: rsdat_nginx_test.rc != 0 and not rsdat_nginx_root_redirect | bool
