@@ -85,7 +85,9 @@ tar -C "$REPO" --exclude=.git -cf - . | docker exec -i "$WS" tar -C /opt/src-com
 
 run_playbook() {
     # shellcheck disable=SC2086
-    docker exec ${EXTRA_ENV:-} -w /opt/src-component-rsdat "$WS" ansible-playbook "$@"
+    # with SRC's strict umask: everything the services and users need must get explicit modes
+    docker exec ${EXTRA_ENV:-} -w /opt/src-component-rsdat "$WS" \
+        sh -c 'umask 077; exec ansible-playbook "$@"' sh "$@"
 }
 echo "== mock SRC-Nginx"
 run_playbook tests/mock_src_nginx.yml

@@ -25,9 +25,11 @@
     state: directory
     mode: "0755"
 
+# The environment must be readable for rsdat (the services) and the users, whatever umask the
+# playbook runs with (SRC: 077), hence umask 022 for everything that writes into it
 - name: Create virtual environment
-  ansible.builtin.command:
-    cmd: "python3 -m venv {{ rsdat_venv }}"
+  ansible.builtin.shell:
+    cmd: "umask 022 && python3 -m venv {{ rsdat_venv }}"
     creates: "{{ rsdat_venv }}/bin/python"
 
 - name: Check the Python version of the environment
@@ -51,15 +53,18 @@
     name: pip
     state: latest  # noqa package-latest
     virtualenv: "{{ rsdat_venv }}"
+    umask: "0022"
 
 - name: Packages shared with the Dask workers (same versions as the worker image)
   ansible.builtin.pip:
     virtualenv: "{{ rsdat_venv }}"
+    umask: "0022"
     requirements: "{{ rsdat_shared_requirements }}"
 
 - name: Install RS-DAT Python packages
   ansible.builtin.pip:
     virtualenv: "{{ rsdat_venv }}"
+    umask: "0022"
     name:
       - bokeh  # Dask dashboard
       - "dask-jobqueue=={{ rsdat_dask_jobqueue_version }}"
@@ -76,5 +81,15 @@
   when: rsdat_extra_pip_packages | length > 0
   ansible.builtin.pip:
     virtualenv: "{{ rsdat_venv }}"
+    umask: "0022"
     name: "{{ rsdat_extra_pip_packages }}"
     extra_args: "-c {{ rsdat_shared_requirements }}"
+
+# also repairs an environment installed with a stricter umask by an earlier version
+- name: Make the environment readable for the services and users
+  ansible.builtin.shell:
+    cmd: >-
+      if [ -n "$(find {{ rsdat_venv }} \( ! -perm -o+r -o \( -type d ! -perm -o+x \) \) -print -quit)" ];
+      then chmod -R go+rX {{ rsdat_venv }} && echo fixed; fi
+  register: rsdat_venv_perms
+  changed_when: "'fixed' in rsdat_venv_perms.stdout"
