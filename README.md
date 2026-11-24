@@ -72,6 +72,9 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_extra_pip_packages` | `[]` | Extra Python packages for the notebooks only. Packages the workers need too go in `worker-image/requirements.txt` |
 | `rsdat_nginx_enabled` | `true` | Publish JupyterLab and Prefect through SRC-Nginx. `false` is for testing on a VM without SRC-Nginx only, see below |
 | `rsdat_prefect_enabled` | `true` | Install and run the Prefect server |
+| `rsdat_prefect_api_auth` | `true` | Protect the Prefect API with a generated password (`/etc/rsdat/prefect-api-password`) instead of SRAM, so Dask workers can report Prefect task states |
+| `rsdat_prefect_api_url` | `https://<rsdat_fqdn>/prefect/api` | Prefect API for notebooks and Dask workers; without nginx `http://<rsdat_fqdn>:4200/api` |
+| `rsdat_fqdn_resolve_locally` | `true` | Resolve `rsdat_fqdn` to `127.0.0.1` on the workspace (`/etc/hosts`) |
 | `rsdat_nginx_root_redirect` | `false` | Redirect `/` to JupyterLab (only if no other component serves `/`) |
 | `rsdat_user` | `rsdat` | Unix user that runs JupyterLab and Prefect |
 
@@ -113,7 +116,24 @@ Any setting can be overridden per cluster, e.g. `RSDATSLURMCluster(cores=16, mem
 
 **Prefect.** The UI is at `https://<workspace>/prefect/`. Flows run from notebooks report to this server (`PREFECT_API_URL` is set in JupyterLab).
 
-To run work on the Dask cluster from a flow, use the Dask client inside the flow (`distributed.get_client()`, `client.map`, ...). `prefect_dask.DaskTaskRunner` is installed (workspace and worker image), but doesn't work yet: Prefect tasks then run on the workers and report their state to the Prefect API, which the workers can't reach (it listens on the workspace's `127.0.0.1`).
+Prefect tasks can run on the Dask workers with `prefect_dask.DaskTaskRunner` (installed on the workspace and in the worker image):
+
+```python
+from prefect import flow, task
+from prefect_dask import DaskTaskRunner
+
+@task
+def work(x):
+    return x * 2
+
+@flow(task_runner=DaskTaskRunner(address=cluster.scheduler_address))   # cluster = RSDATSLURMCluster()
+def my_flow():
+    return [f.result() for f in work.map(range(10))]
+```
+
+The tasks report their state to the Prefect API from the workers, so the API is reachable from the cluster: at `rsdat_prefect_api_url` (`https://<workspace>/prefect/api` behind SRC-Nginx), protected by Prefect's own password instead of SRAM (`rsdat_prefect_api_auth`). Notebooks get the URL and password in their environment (`PREFECT_API_URL`, `PREFECT_API_AUTH_STRING`), and Prefect passes them to the tasks with the flow's settings, inside the TLS-encrypted Dask traffic. The browser UI asks for the password once: the auth string `rsdat:<password>`, see `echo $PREFECT_API_AUTH_STRING` in a JupyterLab terminal. The workspace resolves its own public name to `127.0.0.1` (`/etc/hosts`, `rsdat_fqdn_resolve_locally`), so notebooks reach the API at the same URL as the workers.
+
+Without SRC-Nginx (testing), the Prefect server listens on all interfaces and the URL is `http://<workspace>:4200/api`: that port must be open to the compute nodes, and the password travels unencrypted.
 
 ## Worker environment
 
@@ -195,6 +215,7 @@ None of them logs in to the cluster with SSH (which on Snellius needs MFA): the 
 - **Gateway proxy.** The gateway's SOCKS proxy on the workspace's `127.0.0.1` has no authentication and connects to anything the gateway's node can reach (OpenSSH's `PermitRemoteOpen` can't be limited to a network). Dask only sends connections to the worker network through it, but any process on the workspace could use it to reach the cluster's network, as network traffic from that node, not as your Slurm user. Dask itself stays protected by TLS. On a workspace where others have a shell, use the scheduler on the cluster instead.
 
 - JupyterLab runs as one user (`rsdat`) for the whole workspace. Its own login is disabled because SRC-Nginx does the SRAM login. It listens on `127.0.0.1` only. Everyone in the CO who can open the workspace shares this JupyterLab and its Slurm token. For per-user sessions, use JupyterHub instead (follow-up).
+- **Prefect API.** With `rsdat_prefect_api_auth` the API at `/prefect/api/` is no longer behind the SRAM login but behind Prefect's password, so the Dask workers can reach it. Anyone with the password can read and change flow runs. Everyone who can open this JupyterLab can read it (`PREFECT_API_AUTH_STRING`). It's stored in `/etc/rsdat/prefect-api-password` (root) and in `/etc/rsdat/prefect-*.env` (root and the `rsdat` group).
 - A token given as `rsdat_slurm_jwt` is stored in `/etc/rsdat/slurm.env`, readable only by root and the `rsdat` group.
 
 ## Testing
@@ -216,7 +237,8 @@ The checks:
 - A second playbook run changes nothing.
 - The services run.
 - JupyterLab is reachable through nginx and has the Dask and git extensions.
-- The Prefect UI, its assets and the API work under `/prefect/`, and a flow runs against the server.
+- The Prefect UI, its assets and the API work under `/prefect/` (also without nginx), the API refuses requests without the password, and a flow runs against the server.
+- A Prefect flow with `DaskTaskRunner` runs its tasks on the Slurm workers, and their states reach the Prefect server.
 - `sbatch`, `squeue` and `scancel` work through the REST API.
 - `RSDATSLURMCluster()` with the workspace defaults starts two workers on Slurm, over TLS, with the certificates shipped in the job script, listening in the worker network on the fixed port ranges.
   - Gateway: the workers connect through the contact host, and the scheduler reaches them through the gateway job.

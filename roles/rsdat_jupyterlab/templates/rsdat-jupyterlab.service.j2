@@ -13,7 +13,8 @@ WorkingDirectory={{ rsdat_jupyterlab_root_dir }}
 Environment=PATH={{ rsdat_slurm_bin }}:{{ rsdat_venv }}/bin:/usr/local/bin:/usr/bin:/bin
 Environment=SHELL=/bin/bash
 {% if rsdat_prefect_enabled | bool %}
-Environment=PREFECT_API_URL=http://127.0.0.1:{{ rsdat_prefect_port }}/api
+# PREFECT_API_URL and PREFECT_API_AUTH_STRING (written by the Prefect role, which runs later)
+EnvironmentFile=-{{ rsdat_config_dir }}/prefect-client.env
 {% endif %}
 # The config file is given explicitly; JUPYTER_CONFIG_DIR stays the user's writable ~/.jupyter
 # (jupyter_core writes a "migrated" marker there once ~/.ipython exists).

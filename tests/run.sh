@@ -111,6 +111,8 @@ rsdat_dask_scheduler_memory: 500MiB
 rsdat_dask_scheduler_walltime: "00:15:00"
 rsdat_dask_tunnel_host: "$CONTACT_HOST"
 rsdat_dask_contact_host: "$CONTACT_HOST"
+# the Dask workers (Prefect tasks) reach the Prefect API through the mock nginx (no TLS)
+rsdat_prefect_api_url: "http://$CONTACT_HOST/prefect/api"
 VARS
 docker cp /tmp/rsdat-test-vars.$$.yml "$WS":/opt/src-component-rsdat/tests/test-vars.yml
 rm -f /tmp/rsdat-test-vars.$$.yml

@@ -14,14 +14,16 @@ Environment=PREFECT_UI_SERVE_BASE={{ rsdat_prefect_path | regex_replace('/$', ''
 {% if rsdat_nginx_enabled | bool %}
 Environment=PREFECT_UI_API_URL=https://{{ rsdat_fqdn }}{{ rsdat_prefect_path }}api
 {% else %}
-# no SRC-Nginx: the browser reaches the API through an SSH tunnel to this port
+# no SRC-Nginx: the browser reaches the API through an SSH tunnel to this port (localhost:4200)
 Environment=PREFECT_UI_API_URL=http://localhost:{{ rsdat_prefect_port }}/api
 {% endif %}
 Environment=PREFECT_SERVER_ANALYTICS_ENABLED=false
 # Prefect builds the UI for the serve base by copying it; by default into its own package
 # directory, which the service user can't write (root-owned environment): no UI, every page 404
 Environment=PREFECT_UI_STATIC_DIRECTORY={{ rsdat_prefect_home }}/ui-build
-ExecStart={{ rsdat_venv }}/bin/prefect server start --host 127.0.0.1 --port {{ rsdat_prefect_port }}
+# API password (PREFECT_SERVER_API_AUTH_STRING)
+EnvironmentFile={{ rsdat_config_dir }}/prefect-server.env
+ExecStart={{ rsdat_venv }}/bin/prefect server start --host {{ rsdat_prefect_listen }} --port {{ rsdat_prefect_port }}
 Restart=on-failure
 RestartSec=5
 

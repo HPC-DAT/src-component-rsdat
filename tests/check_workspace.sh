@@ -34,7 +34,9 @@ assert hello() == 42
 print("flow ran against", __import__("prefect").settings.PREFECT_API_URL.value())
 PY
 chmod 644 /tmp/prefect_check.py
-check "Prefect flow runs against the server (JupyterLab environment)" as_user "PREFECT_API_URL=http://127.0.0.1:4200/api $VENV/bin/python /tmp/prefect_check.py"
+PREFECT_ENV="set -a; . /etc/rsdat/prefect-client.env; set +a"
+check "Prefect API refuses requests without the password" bash -c '[ "$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{}" http://localhost/prefect/api/flows/filter)" = 401 ]'
+check "Prefect flow runs against the server (JupyterLab environment)" as_user "$PREFECT_ENV; $VENV/bin/python /tmp/prefect_check.py"
 check "Slurm commands on PATH via the proxy" as_user 'test "$(command -v sbatch)" = /opt/rsdat/slurm-bin/sbatch && squeue >/dev/null'
 cat > /tmp/sbatch_check.sh <<'SH'
 set -e
@@ -118,6 +120,47 @@ PY
 chmod 644 /tmp/dask_check.py
 check "RSDATSLURMCluster with workspace defaults (scheduler on the ${RSDAT_EXPECT_SCHEDULER:-workspace}$([ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && echo ", route ${RSDAT_EXPECT_ROUTE:-direct}"), 2 workers, worker network, restart, dashboard)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH RSDAT_EXPECT_WORKER_NET=${RSDAT_EXPECT_WORKER_NET:-} RSDAT_EXPECT_CONTACT_HOST=${RSDAT_EXPECT_CONTACT_HOST:-} RSDAT_EXPECT_SCHEDULER=${RSDAT_EXPECT_SCHEDULER:-}; cd ~ && timeout 420 python /tmp/dask_check.py"
 check "Dask jobs (workers, scheduler/gateway) cancelled after close" as_user 'sleep 5; ! squeue | grep -q " R .*dask-\| PD .*dask-"'
+
+# Prefect tasks on the Dask workers on Slurm (prefect_dask.DaskTaskRunner): they report to
+# the Prefect API at rsdat_prefect_api_url with the password from the flow's settings
+cat > /tmp/prefect_dask_check.py <<'PY'
+import asyncio, socket
+from prefect import flow, task, get_client
+from prefect.client.schemas.filters import FlowRunFilter, FlowRunFilterId
+from prefect_dask import DaskTaskRunner
+from rsdat_dask import RSDATSLURMCluster
+
+cluster = RSDATSLURMCluster()
+cluster.scale(jobs=1)
+cluster.wait_for_workers(1, timeout=300)
+
+@task
+def where(x):
+    return x, socket.gethostname()
+
+@flow(task_runner=DaskTaskRunner(address=cluster.scheduler_address))
+def on_workers(n=4):
+    return [f.result() for f in where.map(range(n))]
+
+state = on_workers(return_state=True)
+result = state.result()
+print("results:", result)
+assert [x for x, _ in result] == list(range(4)), result
+assert all(h != socket.gethostname() for _, h in result), "tasks didn't run on the workers"
+
+async def task_states():
+    async with get_client() as c:
+        runs = await c.read_task_runs(flow_run_filter=FlowRunFilter(
+            id=FlowRunFilterId(any_=[state.state_details.flow_run_id])))
+        return [r.state.type.value for r in runs]
+states = asyncio.run(task_states())
+print("task run states on the server:", states)
+assert len(states) == 4 and set(states) == {"COMPLETED"}, states
+cluster.close()
+print("OK")
+PY
+chmod 644 /tmp/prefect_dask_check.py
+check "Prefect flow with DaskTaskRunner: tasks on the Slurm workers, states on the server" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; $PREFECT_ENV; cd ~ && timeout 600 python /tmp/prefect_dask_check.py"
 
 # Gateway: a process that ends without closing its cluster doesn't leave the gateway job behind
 if [ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && [ "${RSDAT_EXPECT_ROUTE:-direct}" = gateway ]; then
