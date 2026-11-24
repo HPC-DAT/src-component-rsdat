@@ -5,7 +5,7 @@
 - name: Hash of the worker image definition
   when: rsdat_dask_worker_image | length == 0 and rsdat_dask_worker_python | length == 0
   ansible.builtin.shell:
-    cmd: cat worker-image/requirements.txt worker-image/worker.def | sha256sum | cut -c1-12
+    cmd: cat worker-image/requirements.lock worker-image/python-version worker-image/worker.def | sha256sum | cut -c1-12
     chdir: "{{ playbook_dir }}"
   register: rsdat_worker_image_hash
   changed_when: false

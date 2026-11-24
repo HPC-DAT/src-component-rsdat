@@ -34,12 +34,12 @@ cleanup() { if [ "${KEEP:-0}" != 1 ]; then docker rm -f "$WS" "$SLURM" >/dev/nul
 trap cleanup EXIT
 
 docker image inspect "$SLURM_IMAGE" >/dev/null 2>&1 || { echo "Slurm test image $SLURM_IMAGE not found (see header)"; exit 1; }
-# rebuilt when the worker requirements or the Dockerfile change
-SLURM_SUM="$(cat "$REPO/worker-image/requirements.txt" "$HERE/Dockerfile.slurm" | sha256sum | cut -c1-12)"
+# rebuilt when the worker environment or the Dockerfile change
+SLURM_SUM="$(cat "$REPO/worker-image/requirements.lock" "$REPO/worker-image/python-version" "$HERE/Dockerfile.slurm" | sha256sum | cut -c1-12)"
 SLURM_TEST_IMAGE="${SLURM_TEST_IMAGE:-$SLURM_IMAGE-rsdat:$SLURM_SUM}"
 if ! docker image inspect "$SLURM_TEST_IMAGE" >/dev/null 2>&1; then
     ctx="$(mktemp -d)"
-    cp "$HERE/Dockerfile.slurm" "$REPO/worker-image/requirements.txt" "$ctx/"
+    cp "$HERE/Dockerfile.slurm" "$REPO/worker-image/requirements.lock" "$REPO/worker-image/python-version" "$ctx/"
     docker build ${BUILD_OPTS:-} -t "$SLURM_TEST_IMAGE" --build-arg BASE="$SLURM_IMAGE" -f "$ctx/Dockerfile.slurm" "$ctx"
     rm -rf "$ctx"
 fi

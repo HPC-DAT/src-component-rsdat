@@ -43,7 +43,7 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_slurm_user`, `rsdat_slurm_jwt` | `""` | Optional Slurm user and token (`scontrol token lifespan=…`) for everyone on the workspace. **Secret.** Users can also set their own token, see below |
 | `rsdat_dask_worker_image` | the image built from this checkout's `worker-image/` | Worker image (see [Worker environment](#worker-environment)). Default: `<rsdat_dask_worker_image_repo>:req-<hash of worker-image/>`, the image with exactly the workspace's packages. Or a fixed tag, or a `.sif` file on the cluster |
 | `rsdat_dask_worker_image_repo` | `oras://ghcr.io/hpc-dat/src-component-rsdat-worker` | Where the workflow pushes the worker image |
-| `rsdat_dask_worker_python` | `""` | Instead of an image: a Python **on the cluster** with exactly the versions in `worker-image/requirements.txt` |
+| `rsdat_dask_worker_python` | `""` | Instead of an image: a Python **on the cluster** with exactly the versions in `worker-image/requirements.lock` and Python `worker-image/python-version` |
 | `rsdat_dask_worker_apptainer_args` | `[]` | Extra `apptainer exec` options, e.g. `["--nv"]` for GPUs |
 | `rsdat_dask_local_directory` | `${TMPDIR:-/tmp}` | Where workers spill data: the job's node-local scratch (expanded on the node), not the home filesystem |
 | `rsdat_dask_job_script_prologue` | `[]` | Shell lines run in each worker job before the worker starts, e.g. `["module load 2025", "source ~/venvs/dask/bin/activate"]` |
@@ -72,9 +72,7 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_contact_host` | `rsdat_fqdn` | Scheduler on the workspace: host the workers use to reach it (`""` = the scheduler's own address) |
 | `rsdat_dask_tls` | `true` | TLS between scheduler, workers and clients, with the workspace's own CA (see [Security notes](#security-notes)) |
 | `rsdat_fqdn` | `workspace_fqdn`, else the VM's FQDN | Workspace host name. Research Cloud passes `workspace_fqdn` (e.g. `daskprefectsrv.advisorssrcdemo.src.surf-hosted.nl`). Set `rsdat_fqdn` to override |
-| `rsdat_dask_python_version` | `3.12` | Python minor version of workspace and workers; the playbook stops if the workspace's differs |
-| `rsdat_slurm_proxy_pip_spec` | fork branch with the fixes | pip spec of the SLURM-CLI-API-Proxy client; pin to a tag or commit once merged upstream |
-| `rsdat_extra_pip_packages` | `[]` | Extra Python packages for the notebooks only. Packages the workers need too go in `worker-image/requirements.txt` |
+| `rsdat_extra_pip_packages` | `[]` | Extra Python packages for the notebooks only, resolved on the workspace against the lock file, so they can't change a version the workers share. Packages the workers need too go in `worker-image/requirements.txt` (then run `worker-image/lock.sh`) |
 | `rsdat_nginx_enabled` | `true` | Publish JupyterLab and Prefect through SRC-Nginx. `false` is for testing on a VM without SRC-Nginx only, see below |
 | `rsdat_prefect_enabled` | `true` | Install and run the Prefect server |
 | `rsdat_prefect_api_auth` | `true` | Protect the Prefect API with a generated password (`/etc/rsdat/prefect-api-password`) instead of SRAM, so Dask workers can report Prefect task states |
@@ -83,7 +81,7 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_nginx_root_redirect` | `false` | Redirect `/` to JupyterLab (only if no other component serves `/`) |
 | `rsdat_user` | `rsdat` | Unix user that runs JupyterLab and Prefect |
 
-Dask, distributed and the serialization libraries are pinned in `worker-image/requirements.txt`, which the workspace and the worker image both install. Other versions and settings are in `group_vars/all.yml` and `roles/*/defaults/main.yml`.
+Package versions are in `worker-image/` (see [Worker environment](#worker-environment)); other settings are in `group_vars/all.yml` and `roles/*/defaults/main.yml`.
 
 **Testing on a VM without SRC-Nginx.** Run the playbook with `-e rsdat_nginx_enabled=false`. JupyterLab and Prefect then listen on `127.0.0.1` only, and you reach them through an SSH tunnel:
 
@@ -146,14 +144,24 @@ Without SRC-Nginx (testing), the Prefect server listens on all interfaces and th
 
 ## Worker environment
 
-Scheduler (workspace) and workers exchange functions and data with cloudpickle and msgpack. Python's minor version and the versions of dask, distributed, cloudpickle, msgpack, tornado, toolz and numpy must therefore be identical on both sides. A mismatch breaks in confusing ways.
+Scheduler (workspace) and workers exchange functions and data with cloudpickle and msgpack, and Prefect tasks pass pydantic objects. Python and the versions of these packages must therefore be identical on both sides; a mismatch breaks in confusing ways. Both sides are installed from lock files with the exact version (and hash) of every package, also indirect ones, on the same Python build:
 
-- `worker-image/requirements.txt` pins them. The playbook installs it on the workspace, and the worker image installs the same file.
-- `worker-image/worker.def` builds the worker image: an Apptainer image on Python 3.12, the same as Ubuntu 24.04.
-- `.github/workflows/worker-image.yml` builds it on pushes to `main` that change `worker-image/` and on release tags (`v*`), checks the versions and the Python version, and pushes it to `oras://ghcr.io/<owner>/<repo>-worker` with these tags:
-  - `req-<hash>`: the first 12 characters of the SHA-256 of `requirements.txt` + `worker.def`. The playbook computes the same hash and uses this tag by default, so a workspace always gets the image with exactly its own packages, and nothing needs updating when the image is rebuilt. The image must have been built for that version of `worker-image/` (pushed to `main` or tagged); on a branch with changed requirements it doesn't exist yet.
-  - `<commit>` (7 characters): fixed, for pinning by hand.
-  - `<dask version>` and `latest`: moved by every build. It's based on [RS-DAT/JDS_development_template](https://github.com/RS-DAT/JDS_development_template). Unlike the template it uses pip with this repo's exact pins instead of conda, so the image matches the workspace's pip environment.
+| File in `worker-image/` | What it is |
+|---|---|
+| `requirements.txt` | What the workers need (edit): Dask, the serialization libraries, Prefect, … with exact versions |
+| `workspace.in` | What the workspace needs on top (edit): JupyterLab, dask-jobqueue, the Dask and git extensions, the Slurm client |
+| `python-version` | The Python build of both sides (edit), e.g. `3.12.13`; installed by [uv](https://docs.astral.sh/uv/) on the workspace and in the image, not the OS's Python |
+| `workspace.lock` | Generated by `lock.sh` from `workspace.in`: what the playbook installs on the workspace (`uv pip sync`: exactly this, nothing else) |
+| `requirements.lock` | Generated by `lock.sh` from `requirements.txt`, constrained to `workspace.lock`: what the worker image installs. Every package in it has the same version as in `workspace.lock`; `lock.sh` checks that |
+| `worker.def` | Builds the worker image (Apptainer) |
+
+After editing `requirements.txt`, `workspace.in` or `python-version`, run `worker-image/lock.sh` (needs uv: `pip install uv`) and commit the lock files; `worker-image/lock.sh --upgrade` moves unpinned packages to their newest versions. The workflow fails when the lock files are out of date.
+
+`.github/workflows/worker-image.yml` builds the image on pushes to `main` that change `worker-image/` and on release tags (`v*`), checks that it has exactly the packages of `requirements.lock` and the Python of `python-version`, and pushes it to `oras://ghcr.io/<owner>/<repo>-worker` with these tags:
+
+- `req-<hash>`: the first 12 characters of the SHA-256 of `requirements.lock` + `python-version` + `worker.def`. The playbook computes the same hash and uses this tag by default, so a workspace always gets the image with exactly its own packages, and nothing needs updating when the image is rebuilt. The image must have been built for that version of `worker-image/` (pushed to `main` or tagged); on a branch with changed requirements it doesn't exist yet.
+- `<commit>` (7 characters): fixed, for pinning by hand.
+- `<dask version>` and `latest`: moved by every build. It's based on [RS-DAT/JDS_development_template](https://github.com/RS-DAT/JDS_development_template). Unlike the template it installs this repo's lock file with uv instead of conda, so the image matches the workspace exactly.
 
 With `rsdat_dask_worker_image` set, workers run in the image with the host's directories bound, as in the template. If compute nodes can't reach ghcr.io, pull the image on a login node first and point the parameter at the file:
 
@@ -161,7 +169,7 @@ With `rsdat_dask_worker_image` set, workers run in the image with the host's dir
 apptainer pull ~/rsdat-worker.sif oras://ghcr.io/hpc-dat/src-component-rsdat-worker:2026.8.0
 ```
 
-To add libraries that tasks use (e.g. xarray), add them with exact versions to `worker-image/requirements.txt`. That updates both sides. In a notebook, `client.get_versions(check=True)` raises if the scheduler, workers and client differ.
+To add libraries that tasks use (e.g. xarray), add them to `worker-image/requirements.txt` and run `worker-image/lock.sh`. That updates both sides. In a notebook, `client.get_versions(check=True)` raises if the scheduler, workers and client differ.
 
 ## Networking
 

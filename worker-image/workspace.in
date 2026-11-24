@@ -1,0 +1,16 @@
+# Packages of the workspace environment (/opt/rsdat/venv): JupyterLab, the notebook client,
+# the Dask scheduler and the Prefect server. Includes everything the workers have
+# (requirements.txt), so the shared packages resolve to one version.
+#
+# After changing this file or requirements.txt, run worker-image/lock.sh: it updates
+# workspace.lock and requirements.lock (exact versions of all packages, also indirect ones),
+# which the playbook and the worker image install.
+-r requirements.txt
+dask-jobqueue==0.9.0
+jupyterlab==4.6.4
+dask-labextension==7.0.0
+jupyterlab-git==0.55.0
+jupyter-server-proxy
+# SLURM-CLI-API-Proxy client (sbatch/squeue/scancel/... over the Slurm REST API); the lock pins
+# the commit. Pin to a tag once the fixes are merged upstream.
+slurm-api-cli-proxy @ git+https://github.com/t1mk1k/SLURM-CLI-API-Proxy-client.git@fix/install-scancel-dask

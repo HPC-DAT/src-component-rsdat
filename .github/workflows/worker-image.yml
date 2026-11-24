@@ -23,13 +23,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # The workers must run the workspace's Python minor version (cloudpickle)
-      - name: Check Python version matches the workspace
+      # workspace.lock and requirements.lock must match workspace.in / requirements.txt /
+      # python-version: resolve again and compare (versions that still fit are kept)
+      - name: Check the lock files are up to date
         run: |
-          want=$(sed -nE 's/^rsdat_dask_python_version: *"?([0-9.]+)"?.*/\1/p' roles/rsdat_python/defaults/main.yml)
-          have=$(sed -nE 's/^From: *python:([0-9]+\.[0-9]+).*/\1/p' worker-image/worker.def)
-          echo "workspace: $want, image: $have"
-          test -n "$want" && test "$want" = "$have"
+          pip install --quiet uv==0.11.32
+          worker-image/lock.sh
+          git diff --exit-code worker-image/ || { echo "Run worker-image/lock.sh and commit the lock files"; exit 1; }
 
       - name: Set up Apptainer
         uses: eWaterCycle/setup-apptainer@v2
@@ -39,13 +39,15 @@ jobs:
       - name: Build image
         run: apptainer build worker.sif worker-image/worker.def
 
-      - name: Check the image's Dask versions
+      # the image has the workspace's Python build and exactly the locked packages
+      - name: Check the image's Python and packages
         run: |
           apptainer exec worker.sif python -c "import sys, dask, distributed; print(sys.version); print(dask.__version__, distributed.__version__)"
-          apptainer exec worker.sif pip freeze > image-freeze.txt
-          grep -vE '^\s*(#|$)' worker-image/requirements.txt | while read -r req; do
-            grep -qixF "$req" image-freeze.txt || { echo "missing in image: $req"; exit 1; }
-          done
+          test "$(apptainer exec worker.sif python -c 'import sys; print(sys.version.split()[0])')" = "$(cat worker-image/python-version)"
+          apptainer exec worker.sif uv pip freeze --python /opt/venv/bin/python > image-freeze.txt
+          grep -oE '^[A-Za-z0-9_.-]+==[^ \\]+' worker-image/requirements.lock | sort -f > locked.txt
+          grep -oE '^[A-Za-z0-9_.-]+==[^ ]+' image-freeze.txt | sort -f > installed.txt
+          diff -i locked.txt installed.txt
 
       # registry names must be lower case
       - name: Image name
@@ -53,7 +55,7 @@ jobs:
           echo "IMAGE=oras://ghcr.io/${GITHUB_REPOSITORY,,}-worker" >> "$GITHUB_ENV"
           echo "DASK_VERSION=$(sed -nE 's/^dask==(.+)/\1/p' worker-image/requirements.txt)" >> "$GITHUB_ENV"
           # the tag the playbook looks for by default (rsdat_jupyterlab: "Hash of the worker image definition")
-          echo "DEF_HASH=$(cat worker-image/requirements.txt worker-image/worker.def | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
+          echo "DEF_HASH=$(cat worker-image/requirements.lock worker-image/python-version worker-image/worker.def | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
 
       - name: Push to ghcr.io
         if: github.event_name != 'pull_request'

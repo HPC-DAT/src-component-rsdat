@@ -1,21 +1,17 @@
----
-# Python minor version of the workspace environment. Must equal the workers' (cloudpickle):
-# the worker image (worker-image/worker.def) uses the same; the playbook stops if they differ.
-rsdat_dask_python_version: "3.12"
+# The workspace environment (/opt/rsdat/venv) is installed from a lock file with the exact
+# version of every package, also indirect ones: worker-image/workspace.lock, resolved together
+# with the workers' worker-image/requirements.lock (worker-image/lock.sh). Both sides run the same
+# Python build (worker-image/python-version, installed by uv), so workspace and workers have
+# identical Dask, serialization and Prefect versions.
+rsdat_environment_lock: "{{ playbook_dir }}/worker-image/workspace.lock"
+rsdat_python_version: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/worker-image/python-version') | trim }}"
 
-# Dask, distributed and the serialization libraries are pinned in worker-image/requirements.txt,
-# which the worker image installs as well, so both sides run identical versions.
-rsdat_shared_requirements: "{{ playbook_dir }}/worker-image/requirements.txt"
+# uv installs the Python build and the packages
+rsdat_uv_version: "0.11.32"
+rsdat_uv_dir: /opt/rsdat/uv
+rsdat_python_dir: /opt/rsdat/python
 
-rsdat_dask_jobqueue_version: "0.9.0"
-rsdat_jupyterlab_version: "4.6.4"
-rsdat_dask_labextension_version: "7.0.0"
-rsdat_jupyterlab_git_version: "0.55.0"
-rsdat_prefect_version: "3.9.0"
-
-# SLURM-CLI-API-Proxy client (sbatch/squeue/scancel/... over the Slurm REST API).
-# Pin to a tag or commit once the fixes are merged upstream.
-rsdat_slurm_proxy_pip_spec: "git+https://github.com/t1mk1k/SLURM-CLI-API-Proxy-client.git@fix/install-scancel-dask"
-
-# Extra pip packages for the environment (e.g. ["xarray", "uproot"])
+# Extra packages for the notebooks only (e.g. ["xarray", "uproot"]): resolved on the workspace
+# against the lock, so they can't change the versions shared with the workers. Packages the
+# workers need too go in worker-image/requirements.txt (then run worker-image/lock.sh).
 rsdat_extra_pip_packages: []

@@ -25,56 +25,76 @@
     state: directory
     mode: "0755"
 
-- name: Create virtual environment
-  ansible.builtin.command:
-    cmd: "python3 -m venv {{ rsdat_venv }}"
-    creates: "{{ rsdat_venv }}/bin/python"
+- name: Install uv
+  ansible.builtin.pip:
+    name: "uv=={{ rsdat_uv_version }}"
+    virtualenv: "{{ rsdat_uv_dir }}"
+    virtualenv_command: python3 -m venv
 
-- name: Check the Python version of the environment
+- name: Install the Python build of workspace and workers
   ansible.builtin.command:
-    cmd: "{{ rsdat_venv }}/bin/python -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])'"
+    cmd: "{{ rsdat_uv_dir }}/bin/uv python install {{ rsdat_python_version }}"
+  environment: &rsdat_uv_env
+    UV_PYTHON_INSTALL_DIR: "{{ rsdat_python_dir }}"
+    UV_CACHE_DIR: /var/cache/rsdat-uv
+    UV_PYTHON_PREFERENCE: only-managed
+    # the system's CA certificates (also for proxies with their own CA)
+    UV_SYSTEM_CERTS: "1"
+  register: rsdat_python_install
+  changed_when: "'Installed' in rsdat_python_install.stderr"
+
+- name: Python version of the environment
+  ansible.builtin.command:
+    cmd: "{{ rsdat_venv }}/bin/python -c 'import sys; print(sys.version.split()[0])'"
   register: rsdat_venv_python
   changed_when: false
+  failed_when: false
 
-- name: Stop if the workspace Python differs from the workers'
-  ansible.builtin.assert:
-    that: rsdat_venv_python.stdout == rsdat_dask_python_version
-    fail_msg: >-
-      The workspace environment uses Python {{ rsdat_venv_python.stdout }}, but the Dask workers
-      use {{ rsdat_dask_python_version }} (rsdat_dask_python_version / worker-image/worker.def).
-      Functions sent to the workers (cloudpickle) break when these differ. Use Ubuntu 24.04
-      (Python 3.12), or build a worker image with this Python version and set
-      rsdat_dask_python_version accordingly.
+# also replaces an environment of an older version of this component (system Python)
+- name: Remove an environment with another Python version
+  when: rsdat_venv_python.rc != 0 or rsdat_venv_python.stdout != rsdat_python_version
+  ansible.builtin.file:
+    path: "{{ rsdat_venv }}"
+    state: absent
 
-- name: Upgrade pip
-  ansible.builtin.pip:
-    name: pip
-    state: latest  # noqa package-latest
-    virtualenv: "{{ rsdat_venv }}"
+- name: Create the environment
+  ansible.builtin.command:
+    cmd: "{{ rsdat_uv_dir }}/bin/uv venv --python {{ rsdat_python_version }} {{ rsdat_venv }}"
+    creates: "{{ rsdat_venv }}/bin/python"
+  environment: *rsdat_uv_env
 
-- name: Packages shared with the Dask workers (same versions as the worker image)
-  ansible.builtin.pip:
-    virtualenv: "{{ rsdat_venv }}"
-    requirements: "{{ rsdat_shared_requirements }}"
-
-- name: Install RS-DAT Python packages
-  ansible.builtin.pip:
-    virtualenv: "{{ rsdat_venv }}"
-    name:
-      - bokeh  # Dask dashboard
-      - "dask-jobqueue=={{ rsdat_dask_jobqueue_version }}"
-      - "jupyterlab=={{ rsdat_jupyterlab_version }}"
-      - "dask-labextension=={{ rsdat_dask_labextension_version }}"
-      - "jupyterlab-git=={{ rsdat_jupyterlab_git_version }}"
-      - jupyter-server-proxy
-      - "prefect=={{ rsdat_prefect_version }}"
-      - "{{ rsdat_slurm_proxy_pip_spec }}"
-    # keep the shared versions: fail rather than upgrade them
-    extra_args: "-c {{ rsdat_shared_requirements }}"
-
-- name: Install extra Python packages
+- name: Lock file with the extra packages
   when: rsdat_extra_pip_packages | length > 0
-  ansible.builtin.pip:
-    virtualenv: "{{ rsdat_venv }}"
-    name: "{{ rsdat_extra_pip_packages }}"
-    extra_args: "-c {{ rsdat_shared_requirements }}"
+  block:
+    - name: Configuration directory
+      ansible.builtin.file:
+        path: "{{ rsdat_config_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Resolve the extra packages against the lock
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' {{ rsdat_extra_pip_packages | map('quote') | join(' ') }} |
+          {{ rsdat_uv_dir }}/bin/uv pip compile --quiet --no-header --python {{ rsdat_venv }}/bin/python
+          {{ rsdat_environment_lock | quote }} - -c {{ rsdat_environment_lock | quote }}
+          -o {{ rsdat_config_dir }}/environment.lock.new
+      environment: *rsdat_uv_env
+      changed_when: false
+
+    - name: Keep the resolved lock file
+      ansible.builtin.copy:
+        src: "{{ rsdat_config_dir }}/environment.lock.new"
+        dest: "{{ rsdat_config_dir }}/environment.lock"
+        remote_src: true
+        mode: "0644"
+
+- name: Install the environment from the lock file (exact versions, nothing else)
+  ansible.builtin.command:
+    cmd: >-
+      {{ rsdat_uv_dir }}/bin/uv pip sync --python {{ rsdat_venv }}/bin/python
+      {{ (rsdat_config_dir ~ '/environment.lock') if rsdat_extra_pip_packages | length > 0
+         else rsdat_environment_lock }}
+  environment: *rsdat_uv_env
+  register: rsdat_sync
+  changed_when: "'Installed' in rsdat_sync.stderr or 'Uninstalled' in rsdat_sync.stderr"

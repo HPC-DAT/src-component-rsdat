@@ -9,13 +9,13 @@ rsdat_start_here_dir: /opt/rsdat/share
 # dask_jobqueue.SLURMCluster() in notebooks; both can be overridden per cluster) ---
 # Worker environment on the cluster:
 # - default: the worker image built from this checkout's worker-image/ by the GitHub workflow,
-#   tagged req-<hash of requirements.txt and worker.def>, so it has exactly the workspace's
+#   tagged req-<hash of requirements.lock, python-version and worker.def>, so it has exactly the workspace's
 #   packages: <rsdat_dask_worker_image_repo>:req-<hash>. Exists once that version of
 #   worker-image/ has been built (pushed to main).
 # - rsdat_dask_worker_image: another image, e.g. a fixed tag or a .sif file on the cluster
 #   ("apptainer pull" it on a login node when compute nodes can't reach the registry), or
 # - rsdat_dask_worker_python: a Python on the cluster with exactly the versions in
-#   worker-image/requirements.txt and Python rsdat_dask_python_version.
+#   worker-image/requirements.lock and Python worker-image/python-version.
 rsdat_dask_worker_image_repo: "oras://ghcr.io/hpc-dat/src-component-rsdat-worker"
 rsdat_dask_worker_image: ""
 rsdat_dask_worker_python: ""
