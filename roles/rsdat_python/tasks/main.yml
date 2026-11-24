@@ -31,17 +31,22 @@
     virtualenv: "{{ rsdat_uv_dir }}"
     virtualenv_command: python3 -m venv
 
-- name: Install the Python build of workspace and workers
+- name: Python version of the OS
   ansible.builtin.command:
-    cmd: "{{ rsdat_uv_dir }}/bin/uv python install {{ rsdat_python_version }}"
-  environment: &rsdat_uv_env
-    UV_PYTHON_INSTALL_DIR: "{{ rsdat_python_dir }}"
-    UV_CACHE_DIR: /var/cache/rsdat-uv
-    UV_PYTHON_PREFERENCE: only-managed
-    # the system's CA certificates (also for proxies with their own CA)
-    UV_SYSTEM_CERTS: "1"
-  register: rsdat_python_install
-  changed_when: "'Installed' in rsdat_python_install.stderr"
+    cmd: python3 -c 'import sys; print(sys.version.split()[0])'
+  register: rsdat_os_python
+  changed_when: false
+
+# Workspace and workers run Ubuntu 24.04's Python (the worker image is built on ubuntu:24.04),
+# so both have the same Python and OpenSSL
+- name: Stop if the OS Python differs from the workers'
+  ansible.builtin.assert:
+    that: rsdat_os_python.stdout == rsdat_python_version
+    fail_msg: >-
+      This workspace has Python {{ rsdat_os_python.stdout }}, but the Dask workers use
+      {{ rsdat_python_version }} (worker-image/python-version: Ubuntu 24.04's). Functions sent to
+      the workers (cloudpickle) can break when these differ. Use Ubuntu 24.04, or build a worker
+      image on this OS and set worker-image/python-version accordingly.
 
 - name: Python version of the environment
   ansible.builtin.command:
@@ -50,7 +55,6 @@
   changed_when: false
   failed_when: false
 
-# also replaces an environment of an older version of this component (system Python)
 - name: Remove an environment with another Python version
   when: rsdat_venv_python.rc != 0 or rsdat_venv_python.stdout != rsdat_python_version
   ansible.builtin.file:
@@ -59,9 +63,13 @@
 
 - name: Create the environment
   ansible.builtin.command:
-    cmd: "{{ rsdat_uv_dir }}/bin/uv venv --python {{ rsdat_python_version }} {{ rsdat_venv }}"
+    cmd: "{{ rsdat_uv_dir }}/bin/uv venv --python /usr/bin/python3 {{ rsdat_venv }}"
     creates: "{{ rsdat_venv }}/bin/python"
-  environment: *rsdat_uv_env
+  environment: &rsdat_uv_env
+    UV_CACHE_DIR: /var/cache/rsdat-uv
+    UV_PYTHON_DOWNLOADS: never
+    # the system's CA certificates (also for proxies with their own CA)
+    UV_SYSTEM_CERTS: "1"
 
 - name: Lock file with the extra packages
   when: rsdat_extra_pip_packages | length > 0

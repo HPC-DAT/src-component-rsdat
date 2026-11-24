@@ -1,15 +1,14 @@
 # The workspace environment (/opt/rsdat/venv) is installed from a lock file with the exact
 # version of every package, also indirect ones: worker-image/workspace.lock, resolved together
-# with the workers' worker-image/requirements.lock (worker-image/lock.sh). Both sides run the same
-# Python build (worker-image/python-version, installed by uv), so workspace and workers have
-# identical Dask, serialization and Prefect versions.
+# with the workers' worker-image/requirements.lock (worker-image/lock.sh). Both sides run Ubuntu
+# 24.04's Python (worker-image/python-version; the worker image is built on ubuntu:24.04), so
+# workspace and workers have identical Python, OpenSSL, Dask, serialization and Prefect versions.
 rsdat_environment_lock: "{{ playbook_dir }}/worker-image/workspace.lock"
 rsdat_python_version: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/worker-image/python-version') | trim }}"
 
-# uv installs the Python build and the packages
+# uv installs the packages
 rsdat_uv_version: "0.11.32"
 rsdat_uv_dir: /opt/rsdat/uv
-rsdat_python_dir: /opt/rsdat/python
 
 # Extra packages for the notebooks only (e.g. ["xarray", "uproot"]): resolved on the workspace
 # against the lock, so they can't change the versions shared with the workers. Packages the

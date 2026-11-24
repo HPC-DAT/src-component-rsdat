@@ -1,26 +1,28 @@
 # Apptainer image for the RS-DAT Dask workers on the Slurm cluster.
 # Built and pushed by .github/workflows/worker-image.yml (based on RS-DAT/JDS_development_template).
 #
-# Same Python build as the workspace (python-version, installed by uv on both sides) and the
-# packages of requirements.lock: exact versions of everything, resolved together with the
-# workspace's workspace.lock (lock.sh), so both sides run identical Dask/serialization versions.
+# Same OS Python as the workspace (Ubuntu 24.04's python3.12, worker-image/python-version), so
+# Python and OpenSSL are identical on both sides, and the packages of requirements.lock: exact
+# versions of everything, resolved together with the workspace's workspace.lock (lock.sh), so
+# both sides run identical Dask/serialization/Prefect versions.
 #
 #   apptainer build rsdat-worker.sif worker-image/worker.def     (from the repository root)
 Bootstrap: docker
-From: python:3.12-slim-bookworm
+From: ubuntu:24.04
 
 %files
     worker-image/python-version /opt/rsdat/python-version
     worker-image/requirements.lock /opt/rsdat/requirements.lock
 
 %post
-    # the base image's Python only runs uv; the workers use uv's Python build
-    pip install --no-cache-dir uv==0.11.32
-    export UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_PREFERENCE=only-managed UV_NO_CACHE=1 UV_SYSTEM_CERTS=1
-    uv python install "$(cat /opt/rsdat/python-version)"
-    uv venv --python "$(cat /opt/rsdat/python-version)" /opt/venv
-    uv pip sync --python /opt/venv/bin/python /opt/rsdat/requirements.lock
-    chmod -R a+rX /opt/python /opt/venv
+    export DEBIAN_FRONTEND=noninteractive UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never UV_SYSTEM_CERTS=1
+    apt-get update
+    apt-get install -y --no-install-recommends python3 python3-venv ca-certificates
+    rm -rf /var/lib/apt/lists/*
+    test "$(python3 -c 'import sys; print(sys.version.split()[0])')" = "$(cat /opt/rsdat/python-version)"
+    python3 -m venv /opt/uv && /opt/uv/bin/pip install --no-cache-dir uv==0.11.32
+    /opt/uv/bin/uv venv --python /usr/bin/python3 /opt/venv
+    /opt/uv/bin/uv pip sync --python /opt/venv/bin/python /opt/rsdat/requirements.lock
 
 %environment
     export PATH="/opt/venv/bin:${PATH}"

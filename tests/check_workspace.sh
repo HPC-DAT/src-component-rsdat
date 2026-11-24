@@ -165,7 +165,7 @@ cluster.close()
 print("OK")
 PY
 chmod 644 /tmp/prefect_dask_check.py
-# Workspace and workers: the same Python build and the same version of every package the
+# Workspace and workers: the same Python version and the same version of every package the
 # workers have (requirements.lock), also indirect ones
 cat > /tmp/env_match.py <<'PY'
 import sys
@@ -176,7 +176,7 @@ from rsdat_dask import RSDATSLURMCluster
 def env():
     import sys
     from importlib.metadata import distributions
-    return sys.version, {d.metadata["Name"].lower().replace("_", "-"): d.version for d in distributions()}
+    return sys.version.split()[0], {d.metadata["Name"].lower().replace("_", "-"): d.version for d in distributions()}
 
 cluster = RSDATSLURMCluster()
 cluster.scale(jobs=1)
@@ -187,11 +187,11 @@ for addr, (py, wk) in client.run(env).items():
     assert py == ws_py, f"{addr}: Python {py} != workspace {ws_py}"
     diff = {n: (v, ws.get(n)) for n, v in wk.items() if ws.get(n) != v and n not in ("pip", "uv")}
     assert not diff, f"{addr}: versions differ from the workspace: {diff}"
-    print(addr, "Python", py.split()[0], len(wk), "packages, all as on the workspace")
+    print(addr, "Python", py, len(wk), "packages, all as on the workspace")
 cluster.close()
 PY
 chmod 644 /tmp/env_match.py
-check "Workers have the workspace's Python build and package versions (all locked packages)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; cd ~ && timeout 420 python /tmp/env_match.py"
+check "Workers have the workspace's Python and package versions (all locked packages)" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; cd ~ && timeout 420 python /tmp/env_match.py"
 
 check "Prefect flow with DaskTaskRunner: tasks on the Slurm workers, states on the server" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; $PREFECT_ENV; cd ~ && timeout 600 python /tmp/prefect_dask_check.py"
 

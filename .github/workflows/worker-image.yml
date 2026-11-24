@@ -39,12 +39,12 @@ jobs:
       - name: Build image
         run: apptainer build worker.sif worker-image/worker.def
 
-      # the image has the workspace's Python build and exactly the locked packages
+      # the image has the workspace's Python and exactly the locked packages
       - name: Check the image's Python and packages
         run: |
           apptainer exec worker.sif python -c "import sys, dask, distributed; print(sys.version); print(dask.__version__, distributed.__version__)"
           test "$(apptainer exec worker.sif python -c 'import sys; print(sys.version.split()[0])')" = "$(cat worker-image/python-version)"
-          apptainer exec worker.sif uv pip freeze --python /opt/venv/bin/python > image-freeze.txt
+          apptainer exec worker.sif /opt/uv/bin/uv pip freeze --python /opt/venv/bin/python > image-freeze.txt
           grep -oE '^[A-Za-z0-9_.-]+==[^ \\]+' worker-image/requirements.lock | sort -f > locked.txt
           grep -oE '^[A-Za-z0-9_.-]+==[^ ]+' image-freeze.txt | sort -f > installed.txt
           diff -i locked.txt installed.txt
