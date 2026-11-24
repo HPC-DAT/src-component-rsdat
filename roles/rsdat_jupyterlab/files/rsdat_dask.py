@@ -508,9 +508,12 @@ class RSDATGatewayJob(SLURMJob):
         if worker_scheduler:
             remote_security, tls_lines = ship_worker_security(security, private_dir=False)
             self._job_script_prologue += tls_lines
+            # the worker gets less than the job, so it can't slow down the tunnel (ssh)
             helper = SLURMJob(scheduler=worker_scheduler_address(worker_scheduler),
-                              name="rsdat-gateway", cores=cfg.get("cores", 1), processes=1,
-                              memory=cfg.get("memory", "1GiB"), security=remote_security)
+                              name="rsdat-gateway", processes=1,
+                              cores=cfg.get("worker-cores") or cfg.get("cores", 1),
+                              memory=cfg.get("worker-memory") or cfg.get("memory", "1GiB"),
+                              security=remote_security)
             worker = [helper._command_template + " &", "RSDAT_WORKER_PID=$!"]
         # (no PermitRemoteOpen: it only takes whole hosts or "*", not networks; this process
         # only sends connections to the worker network and the lease through the proxy)

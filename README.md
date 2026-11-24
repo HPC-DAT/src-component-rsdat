@@ -56,6 +56,7 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_worker_route` | `gateway` | Scheduler on the workspace: how it reaches the workers, `gateway` (through a gateway job's SSH tunnel) or `direct` |
 | `rsdat_dask_gateway_cores`, `rsdat_dask_gateway_memory`, `rsdat_dask_gateway_walltime` | `16`, `28GiB`, `12:00:00` | Gateway job; partition and account as the workers. Resubmitted when it ends while clusters use it |
 | `rsdat_dask_gateway_job_extra_directives` | `[]` | Extra `#SBATCH` options for the gateway job |
+| `rsdat_dask_gateway_worker_cores`, `rsdat_dask_gateway_worker_memory` | `14`, `24GiB` | Threads and memory limit of the gateway's worker: less than the job's, so it can't slow down the tunnel or push it out of memory |
 | `rsdat_dask_gateway_worker` | `true` | Also run a Dask worker in the gateway job, on its cores and memory. The defaults (16 cores, 28 GiB) are the share Snellius charges for a job on a shared node anyway; elsewhere set them lower. It joins on top of `scale(jobs=N)` and stays until the gateway job ends |
 | `rsdat_dask_gateway_idle_timeout` | `300` | Seconds after which a gateway job ends when the process that uses it is gone without closing its clusters |
 | `rsdat_dask_worker_network` | `""` | Network (CIDR) the workers (and a scheduler on the cluster) listen on and advertise, e.g. `172.18.0.0/16` on Snellius. Each job picks its node's address in this network when it starts |

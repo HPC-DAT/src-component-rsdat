@@ -31,6 +31,14 @@
       rsdat_dask_worker_route must be 'gateway' or 'direct'; the gateway needs
       rsdat_dask_worker_network (the workers' network, e.g. 172.18.0.0/16 on Snellius).
 
+- name: Check the gateway worker fits in the gateway job
+  when: rsdat_dask_gateway_worker | bool
+  ansible.builtin.assert:
+    that: rsdat_dask_gateway_worker_cores | int <= rsdat_dask_gateway_cores | int
+    fail_msg: >-
+      rsdat_dask_gateway_worker_cores ({{ rsdat_dask_gateway_worker_cores }}) must not exceed
+      rsdat_dask_gateway_cores ({{ rsdat_dask_gateway_cores }}).
+
 - name: Check worker network
   when: rsdat_dask_worker_network | length > 0
   ansible.builtin.assert:
