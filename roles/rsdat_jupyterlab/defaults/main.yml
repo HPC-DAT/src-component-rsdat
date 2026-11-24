@@ -57,10 +57,17 @@ rsdat_dask_gateway_cores: 16
 rsdat_dask_gateway_memory: "28GiB"
 rsdat_dask_gateway_walltime: "12:00:00"
 rsdat_dask_gateway_job_extra_directives: []
+# Replace the gateway job this many seconds before its walltime, without a gap (at most a
+# quarter of its walltime): the new one starts while the old one still runs
+rsdat_dask_gateway_renew_before: 1800
 # Also run a Dask worker in the gateway job, on its cores and memory (rsdat_dask_gateway_cores,
 # rsdat_dask_gateway_memory). It joins on top of scale(jobs=N) and stays until the gateway job
 # ends.
 rsdat_dask_gateway_worker: true
+# Threads and memory limit of that worker: less than the job's, so a busy worker can't slow
+# down the tunnel (ssh encrypts on one core) or push it out of memory
+rsdat_dask_gateway_worker_cores: 14
+rsdat_dask_gateway_worker_memory: "24GiB"
 # The gateway job ends this long (seconds) after the JupyterLab process or kernel that uses it
 # is gone without closing its clusters (e.g. a crash): it holds a lease connection to the job.
 # On a normal exit the process cancels the job right away.

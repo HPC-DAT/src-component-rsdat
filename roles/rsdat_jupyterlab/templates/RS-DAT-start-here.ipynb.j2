@@ -175,7 +175,7 @@
     "Creating the first cluster submits the gateway job and waits for it, so it takes as long as that job waits in the queue. `scale` then submits worker jobs, which join when they start.\n",
     "\n",
 {% if rsdat_dask_gateway_worker | bool %}
-    "- The gateway job also runs a worker, `rsdat-gateway` ({{ rsdat_dask_gateway_cores }} cores; on Snellius 16 is the share it charges for the job anyway). So `scale(jobs=2)` gives three workers.\n",
+    "- The gateway job also runs a worker, `rsdat-gateway-1` ({{ rsdat_dask_gateway_worker_cores }} threads: the job has {{ rsdat_dask_gateway_cores }} cores, on Snellius the share it charges for anyway, and keeps the rest for the tunnel). So `scale(jobs=2)` gives three workers. Before the gateway job reaches its walltime ({{ rsdat_dask_gateway_walltime }}) a new one takes over without a gap; its worker is `rsdat-gateway-2`, and so on.\n",
 {% endif %}
 {% elif not ws %}
     "Creating a cluster submits the scheduler job and waits for it, so it takes as long as that job waits in the queue. `scale` then submits worker jobs, which join when they start.\n",

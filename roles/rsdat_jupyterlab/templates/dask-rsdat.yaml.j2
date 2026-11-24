@@ -104,8 +104,11 @@ rsdat:
     memory: "{{ rsdat_dask_gateway_memory }}"
     walltime: "{{ rsdat_dask_gateway_walltime }}"
     idle-timeout: {{ rsdat_dask_gateway_idle_timeout }}
+    renew-before: {{ rsdat_dask_gateway_renew_before }}
     # a Dask worker in the gateway job too
     worker: {{ rsdat_dask_gateway_worker | bool | to_json }}
+    worker-cores: {{ rsdat_dask_gateway_worker_cores }}
+    worker-memory: "{{ rsdat_dask_gateway_worker_memory }}"
     job-extra-directives: {{ ((['--output=/dev/null'] if rsdat_dask_log_directory | length > 0 else []) + (rsdat_dask_gateway_job_extra_directives | list)) | to_json }}
     start-timeout: {{ rsdat_dask_scheduler_start_timeout }}
     tunnel-give-up: {{ rsdat_dask_tunnel_give_up }}
