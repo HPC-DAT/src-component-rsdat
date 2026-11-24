@@ -104,6 +104,7 @@ rsdat_dask_job_directory: /tmp
 rsdat_dask_worker_network: "$WORKER_NET"
 rsdat_dask_scheduler_location: $SCHEDULER
 rsdat_dask_worker_route: $ROUTE
+rsdat_dask_gateway_cores: 1
 rsdat_dask_gateway_memory: 200MiB
 rsdat_dask_gateway_walltime: "00:15:00"
 rsdat_dask_gateway_idle_timeout: 30

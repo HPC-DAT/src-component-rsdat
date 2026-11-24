@@ -62,14 +62,16 @@ rsdat_dask_worker_route: gateway
 # --- gateway job (scheduler on the workspace, worker route "gateway") ---
 # Resources (partition and account: as the workers). One gateway per JupyterLab process,
 # shared by its clusters; resubmitted when it ends while clusters use it.
-rsdat_dask_gateway_cores: 1
-rsdat_dask_gateway_memory: "1GiB"
+# Snellius charges at least 16 cores (and 1792 MiB per core) for a job on a shared node, so the
+# gateway job asks for that share, and its Dask worker (rsdat_dask_gateway_worker) uses it.
+# Elsewhere 1 core and 1GiB are enough for the tunnel alone.
+rsdat_dask_gateway_cores: 16
+rsdat_dask_gateway_memory: "28GiB"
 rsdat_dask_gateway_walltime: "12:00:00"
 rsdat_dask_gateway_job_extra_directives: []
-# Also run a Dask worker in the gateway job, on its cores and memory (useful where the cluster
-# charges a node share anyway: on Snellius at least 16 cores, so set rsdat_dask_gateway_cores: 16
-# and rsdat_dask_gateway_memory to match). It joins on top of scale(jobs=N) and stays until the
-# gateway job ends.
+# Also run a Dask worker in the gateway job, on its cores and memory (rsdat_dask_gateway_cores,
+# rsdat_dask_gateway_memory). It joins on top of scale(jobs=N) and stays until the gateway job
+# ends.
 rsdat_dask_gateway_worker: true
 # The gateway job ends this long (seconds) after the JupyterLab process or kernel that uses it
 # is gone without closing its clusters (e.g. a crash): it holds a lease connection to the job.

@@ -54,9 +54,9 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_job_directory` | `""` (Slurm user's home) | Working directory of the worker jobs on the cluster, created by the job if missing |
 | `rsdat_dask_scheduler_location` | `workspace` | Where the Dask scheduler runs: `workspace` (in JupyterLab) or `cluster` (a Slurm job that opens an SSH tunnel to the workspace). See [Networking](#networking) |
 | `rsdat_dask_worker_route` | `gateway` | Scheduler on the workspace: how it reaches the workers, `gateway` (through a gateway job's SSH tunnel) or `direct` |
-| `rsdat_dask_gateway_cores`, `rsdat_dask_gateway_memory`, `rsdat_dask_gateway_walltime` | `1`, `1GiB`, `12:00:00` | Gateway job; partition and account as the workers. Resubmitted when it ends while clusters use it |
+| `rsdat_dask_gateway_cores`, `rsdat_dask_gateway_memory`, `rsdat_dask_gateway_walltime` | `16`, `28GiB`, `12:00:00` | Gateway job; partition and account as the workers. Resubmitted when it ends while clusters use it |
 | `rsdat_dask_gateway_job_extra_directives` | `[]` | Extra `#SBATCH` options for the gateway job |
-| `rsdat_dask_gateway_worker` | `true` | Also run a Dask worker in the gateway job, on its cores and memory. On Snellius, which charges at least 16 cores, set `rsdat_dask_gateway_cores: 16` and `rsdat_dask_gateway_memory: 28GiB` so the share you pay for does work. It joins on top of `scale(jobs=N)` and stays until the gateway job ends |
+| `rsdat_dask_gateway_worker` | `true` | Also run a Dask worker in the gateway job, on its cores and memory. The defaults (16 cores, 28 GiB) are the share Snellius charges for a job on a shared node anyway; elsewhere set them lower. It joins on top of `scale(jobs=N)` and stays until the gateway job ends |
 | `rsdat_dask_gateway_idle_timeout` | `300` | Seconds after which a gateway job ends when the process that uses it is gone without closing its clusters |
 | `rsdat_dask_worker_network` | `""` | Network (CIDR) the workers (and a scheduler on the cluster) listen on and advertise, e.g. `172.18.0.0/16` on Snellius. Each job picks its node's address in this network when it starts |
 | `rsdat_dask_scheduler_cores`, `rsdat_dask_scheduler_memory`, `rsdat_dask_scheduler_walltime` | `1`, `2GiB`, `12:00:00` | Scheduler job (scheduler on the cluster); partition and account as the workers. The cluster ends with this job |
