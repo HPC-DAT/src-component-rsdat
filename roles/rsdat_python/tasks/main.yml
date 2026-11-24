@@ -114,11 +114,12 @@
   register: rsdat_sync
   changed_when: "'Installed' in rsdat_sync.stderr or 'Uninstalled' in rsdat_sync.stderr"
 
-# also repairs an environment installed with a stricter umask by an earlier version
+# also repairs an environment installed with a stricter umask by an earlier version (not the
+# bytecode caches Python writes when the playbook runs tools: unreadable ones are just recompiled)
 - name: Make the environment readable for the services and users
   ansible.builtin.shell:
     cmd: >-
-      if [ -n "$(find {{ rsdat_venv }} {{ rsdat_uv_dir }} \( ! -perm -o+r -o \( -type d ! -perm -o+x \) \) -print -quit)" ];
+      if [ -n "$(find {{ rsdat_venv }} {{ rsdat_uv_dir }} -name __pycache__ -prune -o \( ! -perm -o+r -o \( -type d ! -perm -o+x \) \) -print -quit)" ];
       then chmod -R go+rX {{ rsdat_venv }} {{ rsdat_uv_dir }} && echo fixed; fi
   register: rsdat_venv_perms
   changed_when: "'fixed' in rsdat_venv_perms.stdout"
