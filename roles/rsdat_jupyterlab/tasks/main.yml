@@ -25,11 +25,11 @@
 - name: Check worker route
   ansible.builtin.assert:
     that:
-      - rsdat_dask_worker_route in ['gateway', 'direct']
+      - rsdat_dask_worker_route in ['gateway', 'sshuttle', 'direct']
       - rsdat_dask_scheduler_location == 'cluster' or rsdat_dask_worker_route == 'direct' or rsdat_dask_worker_network | length > 0
     fail_msg: >-
-      rsdat_dask_worker_route must be 'gateway' or 'direct'; the gateway needs
-      rsdat_dask_worker_network (the workers' network, e.g. 172.18.0.0/16 on Snellius).
+      rsdat_dask_worker_route must be 'gateway', 'sshuttle' or 'direct'; 'gateway' and 'sshuttle'
+      need rsdat_dask_worker_network (the workers' network, e.g. 172.18.0.0/16 on Snellius).
 
 - name: Check worker network
   when: rsdat_dask_worker_network | length > 0
@@ -201,6 +201,32 @@
         that: rsdat_host_key.stat.exists
         fail_msg: "SSH host key {{ rsdat_dask_tunnel_host_key }} not found (set rsdat_dask_tunnel_host_key)."
 
+# sshuttle: the scheduler (and everything on this workspace) reaches the worker network through
+# one SSH connection to the login node. Root, because sshuttle sets up iptables rules. Until the
+# key is registered on the cluster it fails and systemd retries.
+- name: sshuttle to the worker network
+  when: rsdat_dask_sshuttle | bool
+  block:
+    - name: Install sshuttle
+      ansible.builtin.apt:
+        name: [sshuttle, iptables]
+        state: present
+
+    - name: sshuttle service
+      ansible.builtin.template:
+        src: rsdat-sshuttle.service.j2
+        dest: /etc/systemd/system/rsdat-sshuttle.service
+        mode: "0644"
+      register: rsdat_sshuttle_unit
+
+    - name: Enable and start sshuttle
+      ansible.builtin.systemd:
+        name: rsdat-sshuttle
+        enabled: true
+        state: "{{ 'restarted' if rsdat_sshuttle_unit.changed else 'started' }}"
+        daemon_reload: "{{ rsdat_sshuttle_unit.changed }}"
+      changed_when: rsdat_sshuttle_unit.changed
+
 - name: Directory for shared RS-DAT files
   ansible.builtin.file:
     path: "{{ rsdat_start_here_dir }}"
@@ -211,14 +237,14 @@
 # cluster, Prefect. The user's copy is never overwritten (their edits stay); the original
 # stays in /opt/rsdat/share.
 - name: Start-here notebook (original)
-  ansible.builtin.copy:
-    src: RS-DAT-start-here.ipynb
+  ansible.builtin.template:
+    src: RS-DAT-start-here.ipynb.j2
     dest: "{{ rsdat_start_here_dir }}/RS-DAT-start-here.ipynb"
     mode: "0644"
 
 - name: Start-here notebook (the user's copy, only if missing)
-  ansible.builtin.copy:
-    src: RS-DAT-start-here.ipynb
+  ansible.builtin.template:
+    src: RS-DAT-start-here.ipynb.j2
     dest: "{{ rsdat_jupyterlab_root_dir }}/RS-DAT-start-here.ipynb"
     owner: "{{ rsdat_user }}"
     group: "{{ rsdat_user }}"
