@@ -1,17 +1,49 @@
 ---
-- name: Check Dask worker settings
+# Worker image: by default the one built from this checkout's worker-image/, found by the
+# hash of its files (the workflow tags each image with it), so workspace and workers always
+# have the same packages
+- name: Hash of the worker image definition
+  when: rsdat_dask_worker_image | length == 0 and rsdat_dask_worker_python | length == 0
+  ansible.builtin.shell:
+    cmd: cat worker-image/requirements.txt worker-image/worker.def | sha256sum | cut -c1-12
+    chdir: "{{ playbook_dir }}"
+  register: rsdat_worker_image_hash
+  changed_when: false
+
+- name: Worker image to use
+  ansible.builtin.set_fact:
+    rsdat_dask_worker_image_effective: >-
+      {{ rsdat_dask_worker_image if rsdat_dask_worker_image | length > 0
+         else ('' if rsdat_dask_worker_python | length > 0
+               else rsdat_dask_worker_image_repo ~ ':req-' ~ rsdat_worker_image_hash.stdout) }}
+
+- name: Check scheduler location
   ansible.builtin.assert:
-    that: (rsdat_dask_worker_image | length > 0) or (rsdat_dask_worker_python | length > 0)
+    that: rsdat_dask_scheduler_location in ['cluster', 'workspace']
+    fail_msg: "rsdat_dask_scheduler_location must be 'cluster' or 'workspace'"
+
+- name: Check worker route
+  ansible.builtin.assert:
+    that:
+      - rsdat_dask_worker_route in ['gateway', 'direct']
+      - rsdat_dask_scheduler_location == 'cluster' or rsdat_dask_worker_route == 'direct' or rsdat_dask_worker_network | length > 0
     fail_msg: >-
-      Set rsdat_dask_worker_image (worker image built from worker-image/) or
-      rsdat_dask_worker_python (a Python on the cluster with the versions in
-      worker-image/requirements.txt).
+      rsdat_dask_worker_route must be 'gateway' or 'direct'; the gateway needs
+      rsdat_dask_worker_network (the workers' network, e.g. 172.18.0.0/16 on Snellius).
+
+- name: Check the gateway worker fits in the gateway job
+  when: rsdat_dask_gateway_worker | bool
+  ansible.builtin.assert:
+    that: rsdat_dask_gateway_worker_cores | int <= rsdat_dask_gateway_cores | int
+    fail_msg: >-
+      rsdat_dask_gateway_worker_cores ({{ rsdat_dask_gateway_worker_cores }}) must not exceed
+      rsdat_dask_gateway_cores ({{ rsdat_dask_gateway_cores }}).
 
 - name: Check worker network
   when: rsdat_dask_worker_network | length > 0
   ansible.builtin.assert:
     that: rsdat_dask_worker_network is match('^([0-9]{1,3}[.]){3}[0-9]{1,3}/[0-9]{1,2}$')
-    fail_msg: "rsdat_dask_worker_network must be an IPv4 network in CIDR form, e.g. 145.136.56.0/21"
+    fail_msg: "rsdat_dask_worker_network must be an IPv4 network in CIDR form, e.g. 172.18.0.0/16"
 
 - name: Find the Python environment's site-packages
   ansible.builtin.command:
@@ -61,6 +93,145 @@
     group: "{{ rsdat_user }}"
     mode: "0600"
   loop: [ca.pem, dask.pem, dask.key]
+
+# Scheduler on the cluster, or gateway: a job opens a reverse SSH tunnel to this workspace
+- name: SSH server for the Dask tunnel
+  when: rsdat_dask_scheduler_location == 'cluster' or rsdat_dask_worker_route == 'gateway'
+  block:
+    - name: Install OpenSSH server
+      ansible.builtin.apt:
+        name: openssh-server
+        state: present
+
+    - name: Start the SSH server
+      ansible.builtin.systemd:
+        name: ssh
+        enabled: true
+        state: started
+
+    - name: Directories for the tunnel key
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ rsdat_user }}"
+        group: "{{ rsdat_user }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: "{{ rsdat_home }}/.ssh", mode: "0700"}
+        - {path: "{{ rsdat_home }}/.config", mode: "0755"}
+        - {path: "{{ rsdat_home }}/.config/rsdat", mode: "0700"}
+        - {path: "{{ rsdat_dask_tunnel_dir }}", mode: "0700"}
+
+    - name: Tunnel key
+      ansible.builtin.command:
+        cmd: ssh-keygen -q -t ed25519 -N "" -C rsdat-dask-tunnel -f {{ rsdat_dask_tunnel_dir }}/id_ed25519
+        creates: "{{ rsdat_dask_tunnel_dir }}/id_ed25519"
+
+    - name: Tunnel key owned by the RS-DAT user
+      ansible.builtin.file:
+        path: "{{ rsdat_dask_tunnel_dir }}/{{ item }}"
+        owner: "{{ rsdat_user }}"
+        group: "{{ rsdat_user }}"
+        mode: "0600"
+      loop: [id_ed25519, id_ed25519.pub]
+
+    - name: Read the tunnel's public key
+      ansible.builtin.slurp:
+        src: "{{ rsdat_dask_tunnel_dir }}/id_ed25519.pub"
+      register: rsdat_tunnel_pub
+
+    # The key may only listen on the workspace's 127.0.0.1 (-R); no shell, no -L, no agent
+    - name: Allow the tunnel key, for remote forwarding to 127.0.0.1 only
+      ansible.builtin.lineinfile:
+        path: "{{ rsdat_home }}/.ssh/authorized_keys"
+        regexp: 'rsdat-dask-tunnel$'
+        line: >-
+          restrict,port-forwarding,permitlisten="127.0.0.1:*",command="/bin/false"
+          {{ (rsdat_tunnel_pub.content | b64decode).split()[:2] | join(' ') }} rsdat-dask-tunnel
+        create: true
+        owner: "{{ rsdat_user }}"
+        group: "{{ rsdat_user }}"
+        mode: "0600"
+
+    # authorized_keys' "port-forwarding" also re-enables -L (and permitopen has no "none"),
+    # so the SSH server limits the user to remote forwarding on 127.0.0.1
+    - name: SSH server settings for the tunnel user (remote forwarding to 127.0.0.1 only)
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/rsdat-dask-tunnel.conf
+        mode: "0644"
+        content: |
+          # Generated by Ansible (src-component-rsdat).
+          # {{ rsdat_user }} only receives the Dask scheduler's tunnels (ssh -R to 127.0.0.1)
+          Match User {{ rsdat_user }}
+              AllowTcpForwarding remote
+              PermitListen 127.0.0.1:*
+              AllowAgentForwarding no
+              AllowStreamLocalForwarding no
+              X11Forwarding no
+              PermitTTY no
+              PermitTunnel no
+      register: rsdat_sshd_dropin
+
+    - name: Validate the SSH server configuration
+      when: rsdat_sshd_dropin.changed
+      ansible.builtin.command:
+        cmd: sshd -t
+      changed_when: false
+
+    - name: Reload the SSH server
+      when: rsdat_sshd_dropin.changed
+      ansible.builtin.systemd:
+        name: ssh
+        state: reloaded
+
+    - name: Check that the SSH server applies them
+      ansible.builtin.command:
+        cmd: sshd -T -C user={{ rsdat_user }},host=compute-node,addr=192.0.2.1
+      register: rsdat_sshd_effective
+      changed_when: false
+
+    - name: Stop if the SSH server would allow more than remote forwarding
+      ansible.builtin.assert:
+        that:
+          - "'allowtcpforwarding remote' in rsdat_sshd_effective.stdout_lines"
+          - "'permitlisten 127.0.0.1:*' in rsdat_sshd_effective.stdout_lines"
+        fail_msg: >-
+          sshd doesn't apply /etc/ssh/sshd_config.d/rsdat-dask-tunnel.conf (is the directory
+          included at the top of /etc/ssh/sshd_config?)
+
+    - name: SSH host key for the job's known_hosts
+      ansible.builtin.stat:
+        path: "{{ rsdat_dask_tunnel_host_key }}"
+      register: rsdat_host_key
+
+    - name: Stop if the SSH host key is missing
+      ansible.builtin.assert:
+        that: rsdat_host_key.stat.exists
+        fail_msg: "SSH host key {{ rsdat_dask_tunnel_host_key }} not found (set rsdat_dask_tunnel_host_key)."
+
+- name: Directory for shared RS-DAT files
+  ansible.builtin.file:
+    path: "{{ rsdat_start_here_dir }}"
+    state: directory
+    mode: "0755"
+
+# A guide that JupyterLab opens on login: how the workspace works, the Slurm token, a first
+# cluster, Prefect. The user's copy is never overwritten (their edits stay); the original
+# stays in /opt/rsdat/share.
+- name: Start-here notebook (original)
+  ansible.builtin.copy:
+    src: RS-DAT-start-here.ipynb
+    dest: "{{ rsdat_start_here_dir }}/RS-DAT-start-here.ipynb"
+    mode: "0644"
+
+- name: Start-here notebook (the user's copy, only if missing)
+  ansible.builtin.copy:
+    src: RS-DAT-start-here.ipynb
+    dest: "{{ rsdat_jupyterlab_root_dir }}/RS-DAT-start-here.ipynb"
+    owner: "{{ rsdat_user }}"
+    group: "{{ rsdat_user }}"
+    mode: "0644"
+    force: false
 
 - name: Create configuration directories
   ansible.builtin.file:

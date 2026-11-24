@@ -4,30 +4,81 @@
 #
 #   rsdat-slurm-token                     # paste the output of 'scontrol token' when asked
 #   rsdat-slurm-token SLURM_JWT=eyJ...    # or give it directly
+#   rsdat-slurm-token --status            # is a token set, for whom, and when does it expire
+#   rsdat-slurm-token --user              # the Slurm user name of the current token
 #
 # On the cluster: scontrol token lifespan=<seconds>
 set -euo pipefail
 conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/rsdat"
-token="${1:-}"
-if [ -z "$token" ]; then
-    read -r -s -p "Slurm token (output of 'scontrol token'): " token
-    echo
-fi
-token="${token#SLURM_JWT=}"
-if [ -z "$token" ]; then echo "No token given" >&2; exit 1; fi
-# The user name is in the token ('sun' claim)
-user=$({{ rsdat_venv }}/bin/python - "$token" <<'PY'
+
+# Decode a token's user ('sun' claim) and expiry ('exp'): prints "<user> <exp>"; fails if it
+# isn't a JWT
+claims() {
+    {{ rsdat_venv }}/bin/python - "$1" 2>/dev/null <<'PY'
 import base64, json, sys
 payload = sys.argv[1].split(".")[1]
 payload += "=" * (-len(payload) % 4)
 claims = json.loads(base64.urlsafe_b64decode(payload))
-print(claims.get("sun") or claims.get("username") or "")
+print(claims.get("sun") or claims.get("username") or "-", int(claims.get("exp") or 0))
 PY
-) || { echo "This doesn't look like a Slurm token" >&2; exit 1; }
+}
+
+# The token the Slurm commands use: the personal one overrides the workspace's
+current_token() {
+    local SLURM_JWT=""
+    for f in {{ rsdat_config_dir }}/slurm.env "$conf_dir/slurm.env"; do
+        if [ -r "$f" ]; then set -a; . "$f"; set +a; fi
+    done
+    echo "${SLURM_JWT:-}"
+}
+
+describe() {   # <user> <exp>: one line about the token
+    local user=$1 exp=$2 now left
+    now=$(date +%s)
+    if [ "$exp" -le 0 ]; then
+        echo "Slurm token for $user (no expiry in the token)"
+    elif [ "$exp" -le "$now" ]; then
+        echo "Slurm token for $user EXPIRED on $(date -d "@$exp" '+%a %d %b %H:%M'): run rsdat-slurm-token with a new one"
+        return 1
+    else
+        left=$(( (exp - now) / 60 ))
+        if [ "$left" -ge 120 ]; then left="$(( left / 60 )) hours"; else left="$left minutes"; fi
+        echo "Slurm token for $user, valid until $(date -d "@$exp" '+%a %d %b %H:%M') ($left)"
+    fi
+}
+
+case "${1:-}" in
+    --status|--user)
+        token=$(current_token)
+        if [ -z "$token" ]; then
+            [ "$1" = --status ] && echo "No Slurm token yet: run rsdat-slurm-token (see RS-DAT-start-here.ipynb)"
+            exit 1
+        fi
+        read -r user exp < <(claims "$token") || { echo "The stored Slurm token can't be read: run rsdat-slurm-token" >&2; exit 1; }
+        if [ "$1" = --user ]; then echo "$user"; exit 0; fi
+        describe "$user" "$exp"
+        exit $?
+        ;;
+esac
+
+token="${1:-}"
+if [ -z "$token" ]; then
+    if [ -t 0 ]; then
+        read -r -s -p "Slurm token (output of 'scontrol token'): " token
+        echo
+    else
+        read -r token || true          # from a pipe, e.g. the start-here notebook
+    fi
+fi
+token="${token#SLURM_JWT=}"
+token="${token//[[:space:]]/}"
+if [ -z "$token" ]; then echo "No token given" >&2; exit 1; fi
+read -r user exp < <(claims "$token") || { echo "This doesn't look like a Slurm token" >&2; exit 1; }
 mkdir -p "$conf_dir"
 umask 077
 {
     echo "SLURM_JWT=$token"
-    if [ -n "$user" ]; then echo "SLURM_USER=$user"; fi
+    if [ "$user" != "-" ]; then echo "SLURM_USER=$user"; fi
 } > "$conf_dir/slurm.env"
-echo "Saved token${user:+ for Slurm user $user} in $conf_dir/slurm.env"
+echo "Saved in $conf_dir/slurm.env"
+describe "$user" "$exp" || true

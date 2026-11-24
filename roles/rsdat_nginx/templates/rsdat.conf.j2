@@ -29,8 +29,12 @@ location {{ rsdat_jupyterlab_path }} {
 {% if rsdat_prefect_enabled | bool %}
 
 # Prefect API (used by the Prefect UI in the browser)
+# The API also serves the Dask workers (Prefect tasks with DaskTaskRunner), which can't do the
+# SRAM login: with rsdat_prefect_api_auth it's protected by Prefect's own password instead.
 location {{ rsdat_prefect_path }}api/ {
+{% if not rsdat_prefect_api_auth | bool %}
 {{ auth() }}
+{% endif %}
     proxy_pass http://127.0.0.1:{{ rsdat_prefect_port }}/api/;
 {{ proxy_headers() }}
 }

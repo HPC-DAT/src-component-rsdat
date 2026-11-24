@@ -31,3 +31,21 @@ rsdat_prefect_path: /prefect/
 rsdat_jupyterlab_port: 8888
 rsdat_prefect_port: 4200
 rsdat_prefect_enabled: true
+
+# Prefect API password (Prefect's basic auth, user "rsdat"; generated, in
+# {{ rsdat_config_dir }}/prefect-api-password). Needed because the API is reachable from the
+# cluster: with prefect_dask.DaskTaskRunner the tasks run on the Dask workers and report to it.
+rsdat_prefect_api_auth: true
+# URL of the Prefect API for notebooks and, through them, the Dask workers (Prefect passes the
+# flow's settings to the tasks): must work from the workspace and from the compute nodes.
+# With SRC-Nginx: https://<workspace>/prefect/api. Without (testing): the server's own port on
+# the workspace's public name, so the port must be open to the compute nodes (plain HTTP).
+rsdat_prefect_api_url: >-
+  {{ ('https://' ~ rsdat_fqdn ~ rsdat_prefect_path ~ 'api') if rsdat_nginx_enabled | bool
+     else ('http://' ~ rsdat_fqdn ~ ':' ~ rsdat_prefect_port | string ~ '/api') }}
+# Address the Prefect server listens on: behind nginx 127.0.0.1, without nginx all interfaces
+rsdat_prefect_listen: "{{ '127.0.0.1' if rsdat_nginx_enabled | bool else '0.0.0.0' }}"
+# Resolve rsdat_fqdn to 127.0.0.1 on the workspace itself (/etc/hosts), so notebooks reach the
+# Prefect API by its public name even where the VM can't reach its own public IP (OpenStack
+# floating IPs often can't). Only affects processes on the workspace.
+rsdat_fqdn_resolve_locally: true

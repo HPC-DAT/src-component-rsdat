@@ -1,15 +1,22 @@
 ---
 # Directory JupyterLab opens in
 rsdat_jupyterlab_root_dir: "{{ rsdat_home }}"
+# Open the start-here notebook when someone opens JupyterLab (false: JupyterLab's own start page)
+rsdat_jupyterlab_open_start_here: true
+rsdat_start_here_dir: /opt/rsdat/share
 
 # --- Dask workers on Slurm (defaults for the Dask extension's "New" cluster button and for
 # dask_jobqueue.SLURMCluster() in notebooks; both can be overridden per cluster) ---
-# Worker environment on the cluster. Either:
-# - rsdat_dask_worker_image: the worker image built from worker-image/ (same versions as this
-#   workspace), e.g. "oras://ghcr.io/hpc-dat/src-component-rsdat-worker:2026.8.0" (compute nodes
-#   need registry access) or a .sif file on the cluster ("apptainer pull" it on a login node), or
+# Worker environment on the cluster:
+# - default: the worker image built from this checkout's worker-image/ by the GitHub workflow,
+#   tagged req-<hash of requirements.txt and worker.def>, so it has exactly the workspace's
+#   packages: <rsdat_dask_worker_image_repo>:req-<hash>. Exists once that version of
+#   worker-image/ has been built (pushed to main).
+# - rsdat_dask_worker_image: another image, e.g. a fixed tag or a .sif file on the cluster
+#   ("apptainer pull" it on a login node when compute nodes can't reach the registry), or
 # - rsdat_dask_worker_python: a Python on the cluster with exactly the versions in
 #   worker-image/requirements.txt and Python rsdat_dask_python_version.
+rsdat_dask_worker_image_repo: "oras://ghcr.io/hpc-dat/src-component-rsdat-worker"
 rsdat_dask_worker_image: ""
 rsdat_dask_worker_python: ""
 # Extra 'apptainer exec' options, e.g. ["--nv"] for GPUs
@@ -37,7 +44,70 @@ rsdat_dask_job_directory: ""
 rsdat_dask_local_directory: "${TMPDIR:-/tmp}"
 
 # --- Networking between the scheduler (in JupyterLab on this workspace) and the workers on
-# the cluster; Dask connects in both directions (see README, "Networking") ---
+# the cluster (see README, "Networking") ---
+# Where the Dask scheduler runs:
+# - "workspace": in JupyterLab here. Workers connect to it on rsdat_dask_scheduler_port; how it
+#   reaches the workers is set by rsdat_dask_worker_route.
+# - "cluster": as a Slurm job next to the workers; it opens a reverse SSH tunnel to this
+#   workspace (port rsdat_dask_tunnel_port), which notebooks connect through. Only the cluster
+#   opens connections.
+rsdat_dask_scheduler_location: workspace
+# Scheduler on the workspace: how it reaches the workers
+# - "gateway": through a small gateway job on the cluster that opens a reverse SSH tunnel to
+#   this workspace (a SOCKS proxy into rsdat_dask_worker_network). For when the workspace
+#   can't connect to the compute nodes (Snellius).
+# - "direct": directly; the cluster firewall must allow the workspace to reach the workers.
+rsdat_dask_worker_route: gateway
+
+# --- gateway job (scheduler on the workspace, worker route "gateway") ---
+# Resources (partition and account: as the workers). One gateway per JupyterLab process,
+# shared by its clusters; resubmitted when it ends while clusters use it.
+# Snellius charges at least 16 cores (and 1792 MiB per core) for a job on a shared node, so the
+# gateway job asks for that share, and its Dask worker (rsdat_dask_gateway_worker) uses it.
+# Elsewhere 1 core and 1GiB are enough for the tunnel alone.
+rsdat_dask_gateway_cores: 16
+rsdat_dask_gateway_memory: "28GiB"
+rsdat_dask_gateway_walltime: "12:00:00"
+rsdat_dask_gateway_job_extra_directives: []
+# Replace the gateway job this many seconds before its walltime, without a gap (at most a
+# quarter of its walltime): the new one starts while the old one still runs
+rsdat_dask_gateway_renew_before: 1800
+# Also run a Dask worker in the gateway job, on its cores and memory (rsdat_dask_gateway_cores,
+# rsdat_dask_gateway_memory). It joins on top of scale(jobs=N) and stays until the gateway job
+# ends.
+rsdat_dask_gateway_worker: true
+# Threads and memory limit of that worker: less than the job's, so a busy worker can't slow
+# down the tunnel (ssh encrypts on one core) or push it out of memory
+rsdat_dask_gateway_worker_cores: 14
+rsdat_dask_gateway_worker_memory: "24GiB"
+# The gateway job ends this long (seconds) after the JupyterLab process or kernel that uses it
+# is gone without closing its clusters (e.g. a crash): it holds a lease connection to the job.
+# On a normal exit the process cancels the job right away.
+rsdat_dask_gateway_idle_timeout: 300
+
+# --- scheduler on the cluster ---
+# Resources of the scheduler job (partition and account: as the workers). The cluster's
+# workers stop when the scheduler job ends, so give it the longest walltime you need.
+rsdat_dask_scheduler_cores: 1
+rsdat_dask_scheduler_memory: "2GiB"
+rsdat_dask_scheduler_walltime: "12:00:00"
+rsdat_dask_scheduler_job_extra_directives: []
+# How long a new cluster waits for the scheduler (or gateway) job to start and its tunnel to
+# open (seconds)
+rsdat_dask_scheduler_start_timeout: 900
+# The scheduler (or gateway) job stops when it can't open its tunnel for this long (seconds)
+rsdat_dask_tunnel_give_up: 600
+
+# --- SSH tunnel from the cluster to this workspace (scheduler on the cluster, or gateway) ---
+# SSH server the tunnel goes to: this workspace, reachable from the compute nodes
+rsdat_dask_tunnel_host: "{{ rsdat_fqdn }}"
+rsdat_dask_tunnel_port: 22
+# Key the jobs log in with (as rsdat_user). It may only open listening ports on
+# 127.0.0.1 of this workspace (authorized_keys options); no shell, no other forwarding.
+rsdat_dask_tunnel_dir: "{{ rsdat_home }}/.config/rsdat/dask-tunnel"
+rsdat_dask_tunnel_host_key: /etc/ssh/ssh_host_ed25519_key.pub
+
+# --- scheduler on the workspace ---
 # Scheduler port; the workspace firewall/security group must allow it from the worker network.
 rsdat_dask_scheduler_port: 8786
 # Address the scheduler listens on: "0.0.0.0" (all interfaces) or the workspace's public IP
@@ -53,12 +123,14 @@ rsdat_dask_dashboard_port: 8787
 rsdat_dask_tls: true
 rsdat_dask_tls_dir: "{{ rsdat_home }}/.config/rsdat/dask-tls"
 
-# Network (CIDR) the workers must listen on and advertise, i.e. the compute nodes' addresses
-# that the workspace can reach, e.g. "145.136.56.0/21" on Snellius. Interface names differ
-# between node types, so the address is chosen by network when the job starts.
-# "" = Dask's default (the interface of the node's default route).
+# Network (CIDR) the workers (and a scheduler on the cluster) listen on and advertise: one the
+# compute nodes share, e.g. the internal network "172.18.0.0/16" on Snellius (the public VLAN
+# doesn't connect compute nodes to each other). With the gateway, the scheduler reaches this
+# network through the gateway job; with route "direct", the workspace must reach it.
+# Interface names differ between node types, so the address is chosen by network when the job
+# starts. "" = Dask's default (the interface of the node's default route).
 rsdat_dask_worker_network: ""
-# Fixed port ranges for workers and nannies, so the cluster firewall can allow the workspace to
-# reach them ("" = random ports)
+# Fixed port ranges for workers and nannies, so a cluster firewall can allow them
+# ("" = random ports)
 rsdat_dask_worker_port: "40000:40099"
 rsdat_dask_nanny_port: "40100:40199"

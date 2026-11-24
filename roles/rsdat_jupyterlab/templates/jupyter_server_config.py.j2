@@ -7,6 +7,11 @@ c.ServerApp.ip = "127.0.0.1"
 c.ServerApp.port = {{ rsdat_jupyterlab_port }}
 c.ServerApp.base_url = "{{ rsdat_jupyterlab_path }}"
 c.ServerApp.root_dir = "{{ rsdat_jupyterlab_root_dir }}"
+{% if rsdat_jupyterlab_open_start_here | bool %}
+# opening /jupyter/ shows the guide (relative to root_dir); /jupyter/lab stays the plain start page.
+# (LabApp, not ServerApp: JupyterLab sets the server's default_url itself)
+c.LabApp.default_url = "/lab/tree/RS-DAT-start-here.ipynb"
+{% endif %}
 c.ServerApp.open_browser = False
 c.ServerApp.allow_remote_access = True
 c.ServerApp.trust_xheaders = True
