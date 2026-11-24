@@ -97,6 +97,9 @@ with Client(cluster) as client:
             port = in_net(addr)
             assert 40000 <= port <= 40099, f"worker port {port} outside 40000:40099"
             assert info["nanny"].rsplit(":", 1)[1].startswith("401"), info["nanny"]
+    if not on_cluster and os.environ.get("RSDAT_EXPECT_ROUTE") == "gateway":
+        names = [info["name"] for info in workers.values()]
+        assert "rsdat-gateway" in names, f"no worker in the gateway job: {names}"
     # the scheduler can reach the nannies (restart) and results reach this notebook
     client.restart()
     client.wait_for_workers(2, timeout=120)

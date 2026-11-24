@@ -458,7 +458,8 @@ class RSDATGatewayJob(SLURMJob):
     seconds without a lease connection from this workspace (on the node's 127.0.0.1:<lease_port>,
     through the proxy)."""
 
-    def __init__(self, socks_port, network, lease_port, **kwargs):
+    def __init__(self, socks_port, network, lease_port, worker_scheduler=None, security=None,
+                 **kwargs):
         cfg = dask.config.get("rsdat.gateway", default={}) or {}
         tunnel = dask.config.get("rsdat.tunnel", default={}) or {}
         prologue = list(dask.config.get(f"jobqueue.{self.config_name}.job-script-prologue",
@@ -479,6 +480,17 @@ class RSDATGatewayJob(SLURMJob):
         self._job_script_prologue = (list(self._job_script_prologue) + _private_dir_lines()
                                      + _tunnel_files(tunnel)
                                      + _file_lines(f"{REMOTE_TLS_DIR}/lease.py", _LEASE_LISTENER))
+        # Optionally a Dask worker in the same job, on the job's cores and memory (on clusters
+        # that charge whole node shares anyway): the worker command of a normal worker job, for
+        # the cluster's scheduler on the workspace
+        worker = []
+        if worker_scheduler:
+            remote_security, tls_lines = ship_worker_security(security, private_dir=False)
+            self._job_script_prologue += tls_lines
+            helper = SLURMJob(scheduler=worker_scheduler_address(worker_scheduler),
+                              name="rsdat-gateway", cores=cfg.get("cores", 1), processes=1,
+                              memory=cfg.get("memory", "1GiB"), security=remote_security)
+            worker = [helper._command_template + " &", "RSDAT_WORKER_PID=$!"]
         # (no PermitRemoteOpen: it only takes whole hosts or "*", not networks; this process
         # only sends connections to the worker network and the lease through the proxy)
         ssh, dest = _ssh(tunnel)
@@ -489,7 +501,9 @@ class RSDATGatewayJob(SLURMJob):
             f'{python} "$RSDAT_TLS_DIR/lease.py" {int(lease_port)} {idle} &',
             "RSDAT_LEASE_PID=$!",
             "RSDAT_SSH_PID=",
-            'trap \'kill $RSDAT_SSH_PID $RSDAT_LEASE_PID 2>/dev/null; rm -rf "$RSDAT_TLS_DIR"\' EXIT',
+            "RSDAT_WORKER_PID=",
+            *worker,
+            'trap \'kill $RSDAT_SSH_PID $RSDAT_LEASE_PID $RSDAT_WORKER_PID 2>/dev/null; rm -rf "$RSDAT_TLS_DIR"\' EXIT',
             # no destination after the port: OpenSSH's reverse dynamic forward (SOCKS)
             f'fwd=(-R "127.0.0.1:{int(socks_port)}")',
             f'echo "rsdat: gateway into {network} for {dest}, SOCKS on its 127.0.0.1:{int(socks_port)}"',
@@ -643,7 +657,7 @@ class _Gateway:
         self._lease = None
         atexit.register(self._cancel_at_exit)
 
-    async def acquire(self, network):
+    async def acquire(self, network, worker_scheduler=None, security=None):
         with self._mutex:
             self.users += 1
             first = self.job is None and not self._starting
@@ -651,6 +665,7 @@ class _Gateway:
                 self._starting = True
         try:
             if first:
+                self._worker = (worker_scheduler, security)
                 try:
                     await self._start(network)
                 finally:
@@ -672,7 +687,9 @@ class _Gateway:
         self.port = self.port or _free_local_port()
         # a port for the lease listener on the job's node (random; collisions there are unlikely)
         self.lease_port = self.lease_port or _free_local_port()
-        job = RSDATGatewayJob(self.port, network, self.lease_port)
+        worker_scheduler, security = getattr(self, "_worker", (None, None))
+        job = RSDATGatewayJob(self.port, network, self.lease_port,
+                              worker_scheduler=worker_scheduler, security=security)
         await _submit(job)
         timeout = float(cfg.get("start-timeout", 900))
         deadline = time.monotonic() + timeout
@@ -793,7 +810,15 @@ class RSDATSLURMCluster(SLURMCluster):
         await _slurm_preflight()
         if self._gateway_network and not self._gateway_acquired:
             # the scheduler (in this process) reaches the workers through the gateway job
-            await _GATEWAY.acquire(self._gateway_network)
+            worker_scheduler = None
+            if dask.config.get("rsdat.gateway.worker", default=False):
+                # the scheduler isn't up yet, but its address is fixed: workers get the contact
+                # host with the configured protocol and port
+                port = dask.config.get(f"jobqueue.{self.job_cls.config_name}.scheduler-options.port",
+                                       default=8786)
+                proto = "tls" if self.security is not None and self.security.require_encryption else "tcp"
+                worker_scheduler = f"{proto}://0.0.0.0:{int(port)}"
+            await _GATEWAY.acquire(self._gateway_network, worker_scheduler, self.security)
             self._gateway_acquired = True
             self.periodic_callbacks["rsdat-gateway"] = PeriodicCallback(_GATEWAY.check, 30_000)
         try:

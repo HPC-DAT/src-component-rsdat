@@ -66,6 +66,11 @@ rsdat_dask_gateway_cores: 1
 rsdat_dask_gateway_memory: "1GiB"
 rsdat_dask_gateway_walltime: "12:00:00"
 rsdat_dask_gateway_job_extra_directives: []
+# Also run a Dask worker in the gateway job, on its cores and memory (useful where the cluster
+# charges a node share anyway: on Snellius at least 16 cores, so set rsdat_dask_gateway_cores: 16
+# and rsdat_dask_gateway_memory to match). It joins on top of scale(jobs=N) and stays until the
+# gateway job ends.
+rsdat_dask_gateway_worker: true
 # The gateway job ends this long (seconds) after the JupyterLab process or kernel that uses it
 # is gone without closing its clusters (e.g. a crash): it holds a lease connection to the job.
 # On a normal exit the process cancels the job right away.
