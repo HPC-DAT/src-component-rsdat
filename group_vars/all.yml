@@ -26,6 +26,9 @@ rsdat_nginx_enabled: true
 # URL paths behind SRC-Nginx
 rsdat_jupyterlab_path: /jupyter/
 rsdat_prefect_path: /prefect/
+# The Prefect API for machines (notebooks, Dask workers): Prefect's password, no SRAM login.
+# People use the UI at rsdat_prefect_path (SRAM login; nginx adds the password).
+rsdat_prefect_machine_path: "{{ rsdat_prefect_path }}machine-api/"
 
 # Local ports (bound to 127.0.0.1; nginx proxies to them)
 rsdat_jupyterlab_port: 8888
@@ -38,10 +41,11 @@ rsdat_prefect_enabled: true
 rsdat_prefect_api_auth: true
 # URL of the Prefect API for notebooks and, through them, the Dask workers (Prefect passes the
 # flow's settings to the tasks): must work from the workspace and from the compute nodes.
-# With SRC-Nginx: https://<workspace>/prefect/api. Without (testing): the server's own port on
-# the workspace's public name, so the port must be open to the compute nodes (plain HTTP).
+# With SRC-Nginx: https://<workspace>/prefect/machine-api (password, no SRAM login). Without
+# (testing): the server's own port on the workspace's public name, so the port must be open to
+# the compute nodes (plain HTTP).
 rsdat_prefect_api_url: >-
-  {{ ('https://' ~ rsdat_fqdn ~ rsdat_prefect_path ~ 'api') if rsdat_nginx_enabled | bool
+  {{ ('https://' ~ rsdat_fqdn ~ rsdat_prefect_machine_path | regex_replace('/$', '')) if rsdat_nginx_enabled | bool
      else ('http://' ~ rsdat_fqdn ~ ':' ~ rsdat_prefect_port | string ~ '/api') }}
 # Address the Prefect server listens on: behind nginx 127.0.0.1, without nginx all interfaces
 rsdat_prefect_listen: "{{ '127.0.0.1' if rsdat_nginx_enabled | bool else '0.0.0.0' }}"
