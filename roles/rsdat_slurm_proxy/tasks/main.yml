@@ -4,6 +4,26 @@
     that: rsdat_slurm_api_url | length > 0
     fail_msg: "Set rsdat_slurm_api_url to the Slurm REST API of the cluster (e.g. https://slurm.snellius.surf.nl)."
 
+# Without a token slurmrestd answers 401 (or 403): reachable, and it serves the API version the
+# proxy client uses. A connection error or a 404 means a wrong URL (or no v0.0.43).
+- name: Check that the Slurm REST API answers
+  when: rsdat_slurm_api_check | bool
+  ansible.builtin.uri:
+    url: "{{ rsdat_slurm_api_url | regex_replace('/$', '') }}/slurm/v0.0.43/ping"
+    status_code: [200, 401, 403]
+    timeout: 20
+  register: rsdat_slurm_api_ping
+  failed_when: false
+
+- name: Stop if the Slurm REST API doesn't answer
+  when: rsdat_slurm_api_check | bool and rsdat_slurm_api_ping.status not in [200, 401, 403]
+  ansible.builtin.fail:
+    msg: >-
+      The Slurm REST API at {{ rsdat_slurm_api_url }} doesn't answer as expected
+      ({{ rsdat_slurm_api_ping.status | default('?') }}: {{ rsdat_slurm_api_ping.msg | default('') | truncate(200) }}).
+      Check rsdat_slurm_api_url: the base URL of slurmrestd, serving API v0.0.43 (Slurm 25.05),
+      reachable from this workspace. Set rsdat_slurm_api_check=false to skip this check.
+
 - name: Create directories
   ansible.builtin.file:
     path: "{{ item }}"

@@ -164,6 +164,21 @@ PY
 chmod 644 /tmp/prefect_dask_check.py
 check "Prefect flow with DaskTaskRunner: tasks on the Slurm workers, states on the server" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; $PREFECT_ENV; cd ~ && timeout 600 python /tmp/prefect_dask_check.py"
 
+# A wrong Slurm REST API URL: creating a cluster fails quickly with a message naming the API
+cat > /tmp/wrong_url_check.sh <<'SH'
+set -e
+mkdir -p ~/.config/rsdat
+cp ~/.config/rsdat/slurm.env /tmp/slurm.env.bak 2>/dev/null || true
+echo "PROXY_SLURM_API_URL=http://127.0.0.1:9" >> ~/.config/rsdat/slurm.env
+start=$(date +%s)
+out=$(timeout 200 python -c 'from rsdat_dask import RSDATSLURMCluster; RSDATSLURMCluster()' 2>&1 || true)
+if [ -f /tmp/slurm.env.bak ]; then cp /tmp/slurm.env.bak ~/.config/rsdat/slurm.env; else rm -f ~/.config/rsdat/slurm.env; fi
+echo "$out" | tail -3
+echo "$out" | grep -q "Slurm REST API at http://127.0.0.1:9" && [ $(( $(date +%s) - start )) -lt 150 ]
+SH
+chmod 644 /tmp/wrong_url_check.sh
+check "Wrong Slurm REST API URL: a new cluster fails quickly with a clear message" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; cd ~ && bash /tmp/wrong_url_check.sh"
+
 # Gateway: a process that ends without closing its cluster doesn't leave the gateway job behind
 if [ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && [ "${RSDAT_EXPECT_ROUTE:-direct}" = gateway ]; then
 cat > /tmp/gateway_orphan.py <<'PY'

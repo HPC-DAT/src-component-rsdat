@@ -39,6 +39,7 @@ sudo ansible-playbook rsdat.yml \
 | Parameter | Default | Meaning |
 |---|---|---|
 | `rsdat_slurm_api_url` | — (required) | Slurm REST API of the cluster, e.g. `https://slurm.snellius.surf.nl` |
+| `rsdat_slurm_api_check` | `true` | Check at deployment that `rsdat_slurm_api_url` answers; a new Dask cluster also checks the API first and fails within seconds with a clear message |
 | `rsdat_slurm_user`, `rsdat_slurm_jwt` | `""` | Optional Slurm user and token (`scontrol token lifespan=…`) for everyone on the workspace. **Secret.** Users can also set their own token, see below |
 | `rsdat_dask_worker_image` | the image built from this checkout's `worker-image/` | Worker image (see [Worker environment](#worker-environment)). Default: `<rsdat_dask_worker_image_repo>:req-<hash of worker-image/>`, the image with exactly the workspace's packages. Or a fixed tag, or a `.sif` file on the cluster |
 | `rsdat_dask_worker_image_repo` | `oras://ghcr.io/hpc-dat/src-component-rsdat-worker` | Where the workflow pushes the worker image |

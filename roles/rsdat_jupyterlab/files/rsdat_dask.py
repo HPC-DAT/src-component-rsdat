@@ -36,6 +36,7 @@ import atexit
 import ipaddress
 import json
 import logging
+import os
 import select
 import shlex
 import socket
@@ -210,6 +211,53 @@ async def _job_state(job):
 
 _ALIVE = ("PENDING", "CONFIGURING", "RUNNING", "UNKNOWN")
 
+# Slurm commands go through the REST API: without a timeout a wrong or unreachable API URL
+# leaves a new cluster waiting silently
+SLURM_CALL_TIMEOUT = 120
+SLURM_UNKNOWN_LIMIT = 120          # seconds of failing squeue while waiting for a job
+
+
+def _slurm_api_url():
+    """The REST API URL the Slurm commands use (PROXY_SLURM_API_URL in their settings)."""
+    url = None
+    for path in ("/etc/rsdat/slurm.env", os.path.expanduser("~/.config/rsdat/slurm.env")):
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("PROXY_SLURM_API_URL="):
+                        url = line.split("=", 1)[1].strip().strip('"')
+        except OSError:
+            pass
+    return url or os.environ.get("PROXY_SLURM_API_URL") or "(not set)"
+
+
+def _slurm_hint(error):
+    detail = str(error).strip().splitlines()
+    detail = " ".join(l.strip() for l in detail if l.strip() and not l.startswith(("Command", "Exit code")))
+    return (f"The Slurm REST API at {_slurm_api_url()} didn't work: {detail[:500]}\n"
+            "Check the token (rsdat-slurm-token --status) and the API URL (rsdat_slurm_api_url).")
+
+
+async def _slurm_preflight():
+    """Fail fast and clearly when the Slurm REST API can't be used (wrong URL, no or expired
+    token), instead of waiting for a job that was never submitted."""
+    try:
+        await asyncio.wait_for(SLURMJob._call(["sinfo"]), SLURM_CALL_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise RuntimeError(_slurm_hint(f"no answer within {SLURM_CALL_TIMEOUT} s")) from None
+    except (RuntimeError, OSError) as e:
+        raise RuntimeError(_slurm_hint(e)) from None
+
+
+async def _submit(job):
+    """job.start() (sbatch through the REST API) with a time limit and a clear error."""
+    try:
+        await asyncio.wait_for(job.start(), SLURM_CALL_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise RuntimeError(_slurm_hint(f"sbatch didn't answer within {SLURM_CALL_TIMEOUT} s")) from None
+    except RuntimeError as e:
+        raise RuntimeError(_slurm_hint(e)) from None
+
 
 class RSDATSchedulerJob(SLURMJob):
     """The Slurm job that runs the Dask scheduler on the cluster and the reverse SSH tunnel to
@@ -325,13 +373,14 @@ class RSDATRemoteScheduler(ProcessInterface):
         while dashboard_port == tunnel_port:
             dashboard_port = _free_local_port()
         self.job = RSDATSchedulerJob(tunnel_port, dashboard_port, security=self.security)
-        await self.job.start()
+        await _submit(self.job)
         tls = self.security is not None and self.security.get_tls_config_for_role("client").get("cert")
         address = f"{'tls' if tls else 'tcp'}://127.0.0.1:{tunnel_port}"
         timeout = float(cfg.get("start-timeout", 900))
         deadline = time.monotonic() + timeout
         logger.info("Waiting for scheduler job %s (tunnel %s)", self.job.job_id, address)
         connection_args = self.security.get_connection_args("client") if self.security else {}
+        unknown_since = None
         while True:
             try:
                 async with rpc(address, timeout=5, connection_args=connection_args) as r:
@@ -339,6 +388,11 @@ class RSDATRemoteScheduler(ProcessInterface):
                 break
             except (OSError, asyncio.TimeoutError):
                 state = await _job_state(self.job)
+                unknown_since = (unknown_since or time.monotonic()) if state == "UNKNOWN" else None
+                if unknown_since and time.monotonic() - unknown_since > SLURM_UNKNOWN_LIMIT:
+                    await self.job.close()
+                    raise RuntimeError(_slurm_hint(
+                        f"squeue failed for {SLURM_UNKNOWN_LIMIT} s while waiting for scheduler job {self.job.job_id}"))
                 if state not in _ALIVE:
                     raise RuntimeError(
                         f"Dask scheduler job {self.job.job_id} ended ({state}) before it could be "
@@ -614,12 +668,18 @@ class _Gateway:
         # a port for the lease listener on the job's node (random; collisions there are unlikely)
         self.lease_port = self.lease_port or _free_local_port()
         job = RSDATGatewayJob(self.port, network, self.lease_port)
-        await job.start()
+        await _submit(job)
         timeout = float(cfg.get("start-timeout", 900))
         deadline = time.monotonic() + timeout
         logger.info("Waiting for gateway job %s (SOCKS on 127.0.0.1:%s)", job.job_id, self.port)
+        unknown_since = None
         while not await _socks_ok(self.port):
             state = await _job_state(job)
+            unknown_since = (unknown_since or time.monotonic()) if state == "UNKNOWN" else None
+            if unknown_since and time.monotonic() - unknown_since > SLURM_UNKNOWN_LIMIT:
+                await job.close()
+                raise RuntimeError(_slurm_hint(
+                    f"squeue failed for {SLURM_UNKNOWN_LIMIT} s while waiting for gateway job {job.job_id}"))
             if state not in _ALIVE:
                 raise RuntimeError(
                     f"Dask gateway job {job.job_id} ended ({state}) before its tunnel opened; "
@@ -724,6 +784,8 @@ class RSDATSLURMCluster(SLURMCluster):
         super().__init__(*args, security=security, **kwargs)
 
     async def _start(self):
+        # every set-up submits jobs through the Slurm REST API: check it first
+        await _slurm_preflight()
         if self._gateway_network and not self._gateway_acquired:
             # the scheduler (in this process) reaches the workers through the gateway job
             await _GATEWAY.acquire(self._gateway_network)

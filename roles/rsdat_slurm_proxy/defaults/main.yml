@@ -8,3 +8,6 @@ rsdat_slurm_user: ""
 rsdat_slurm_jwt: ""
 # Slurm commands provided through the proxy
 rsdat_slurm_commands: [sbatch, squeue, sinfo, scontrol, scancel]
+# Check at deployment that rsdat_slurm_api_url answers (any HTTP status of slurmrestd without a
+# token); false skips it, e.g. when the API is only reachable later
+rsdat_slurm_api_check: true
