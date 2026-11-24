@@ -5,6 +5,7 @@ name: Worker image
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - worker-image/**
       - .github/workflows/worker-image.yml
@@ -51,6 +52,8 @@ jobs:
         run: |
           echo "IMAGE=oras://ghcr.io/${GITHUB_REPOSITORY,,}-worker" >> "$GITHUB_ENV"
           echo "DASK_VERSION=$(sed -nE 's/^dask==(.+)/\1/p' worker-image/requirements.txt)" >> "$GITHUB_ENV"
+          # the tag the playbook looks for by default (rsdat_jupyterlab: "Hash of the worker image definition")
+          echo "DEF_HASH=$(cat worker-image/requirements.txt worker-image/worker.def | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
 
       - name: Push to ghcr.io
         if: github.event_name != 'pull_request'
@@ -58,4 +61,5 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | apptainer remote login -u "${{ github.actor }}" --password-stdin oras://ghcr.io
           apptainer push worker.sif "${IMAGE}:${DASK_VERSION}"
           apptainer push worker.sif "${IMAGE}:${GITHUB_SHA::7}"
+          apptainer push worker.sif "${IMAGE}:req-${DEF_HASH}"
           apptainer push worker.sif "${IMAGE}:latest"

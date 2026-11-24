@@ -1,11 +1,21 @@
 ---
-- name: Check Dask worker settings
-  ansible.builtin.assert:
-    that: (rsdat_dask_worker_image | length > 0) or (rsdat_dask_worker_python | length > 0)
-    fail_msg: >-
-      Set rsdat_dask_worker_image (worker image built from worker-image/) or
-      rsdat_dask_worker_python (a Python on the cluster with the versions in
-      worker-image/requirements.txt).
+# Worker image: by default the one built from this checkout's worker-image/, found by the
+# hash of its files (the workflow tags each image with it), so workspace and workers always
+# have the same packages
+- name: Hash of the worker image definition
+  when: rsdat_dask_worker_image | length == 0 and rsdat_dask_worker_python | length == 0
+  ansible.builtin.shell:
+    cmd: cat worker-image/requirements.txt worker-image/worker.def | sha256sum | cut -c1-12
+    chdir: "{{ playbook_dir }}"
+  register: rsdat_worker_image_hash
+  changed_when: false
+
+- name: Worker image to use
+  ansible.builtin.set_fact:
+    rsdat_dask_worker_image_effective: >-
+      {{ rsdat_dask_worker_image if rsdat_dask_worker_image | length > 0
+         else ('' if rsdat_dask_worker_python | length > 0
+               else rsdat_dask_worker_image_repo ~ ':req-' ~ rsdat_worker_image_hash.stdout) }}
 
 - name: Check scheduler location
   ansible.builtin.assert:
@@ -190,6 +200,30 @@
       ansible.builtin.assert:
         that: rsdat_host_key.stat.exists
         fail_msg: "SSH host key {{ rsdat_dask_tunnel_host_key }} not found (set rsdat_dask_tunnel_host_key)."
+
+- name: Directory for shared RS-DAT files
+  ansible.builtin.file:
+    path: "{{ rsdat_start_here_dir }}"
+    state: directory
+    mode: "0755"
+
+# A guide that JupyterLab opens on login: how the workspace works, the Slurm token, a first
+# cluster, Prefect. The user's copy is never overwritten (their edits stay); the original
+# stays in /opt/rsdat/share.
+- name: Start-here notebook (original)
+  ansible.builtin.copy:
+    src: RS-DAT-start-here.ipynb
+    dest: "{{ rsdat_start_here_dir }}/RS-DAT-start-here.ipynb"
+    mode: "0644"
+
+- name: Start-here notebook (the user's copy, only if missing)
+  ansible.builtin.copy:
+    src: RS-DAT-start-here.ipynb
+    dest: "{{ rsdat_jupyterlab_root_dir }}/RS-DAT-start-here.ipynb"
+    owner: "{{ rsdat_user }}"
+    group: "{{ rsdat_user }}"
+    mode: "0644"
+    force: false
 
 - name: Create configuration directories
   ansible.builtin.file:

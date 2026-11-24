@@ -40,7 +40,8 @@ sudo ansible-playbook rsdat.yml \
 |---|---|---|
 | `rsdat_slurm_api_url` | — (required) | Slurm REST API of the cluster, e.g. `https://slurm.snellius.surf.nl` |
 | `rsdat_slurm_user`, `rsdat_slurm_jwt` | `""` | Optional Slurm user and token (`scontrol token lifespan=…`) for everyone on the workspace. **Secret.** Users can also set their own token, see below |
-| `rsdat_dask_worker_image` | `""` | Worker image built from `worker-image/` (see [Worker environment](#worker-environment)): `oras://ghcr.io/hpc-dat/src-component-rsdat-worker:<tag>`, or a `.sif` file on the cluster. Set this **or** `rsdat_dask_worker_python` |
+| `rsdat_dask_worker_image` | the image built from this checkout's `worker-image/` | Worker image (see [Worker environment](#worker-environment)). Default: `<rsdat_dask_worker_image_repo>:req-<hash of worker-image/>`, the image with exactly the workspace's packages. Or a fixed tag, or a `.sif` file on the cluster |
+| `rsdat_dask_worker_image_repo` | `oras://ghcr.io/hpc-dat/src-component-rsdat-worker` | Where the workflow pushes the worker image |
 | `rsdat_dask_worker_python` | `""` | Instead of an image: a Python **on the cluster** with exactly the versions in `worker-image/requirements.txt` |
 | `rsdat_dask_worker_apptainer_args` | `[]` | Extra `apptainer exec` options, e.g. `["--nv"]` for GPUs |
 | `rsdat_dask_local_directory` | `${TMPDIR:-/tmp}` | Where workers spill data: the job's node-local scratch (expanded on the node), not the home filesystem |
@@ -91,13 +92,15 @@ JupyterLab has no login of its own, so anyone with a shell on the VM can use it 
 
 ## Using it
 
+**Start here.** Opening `/jupyter/` shows `RS-DAT-start-here.ipynb`: how the workspace works, a cell to store your Slurm token, a check against the cluster, a first Dask cluster, Prefect, and what to do when something fails. It's the user's own copy (never overwritten by the playbook; the original is in `/opt/rsdat/share`). New terminals show whether a Slurm token is set and when it expires. `rsdat_jupyterlab_open_start_here: false` keeps JupyterLab's own start page.
+
 **Slurm token.** The Slurm REST API needs a token. If none was set as a parameter, open a terminal in JupyterLab and run:
 
 ```bash
 rsdat-slurm-token        # paste the output of 'scontrol token lifespan=86400' run on the cluster
 ```
 
-The token is stored in `~/.config/rsdat/slurm.env` and read on every Slurm command, so nothing needs a restart. When it expires, run `rsdat-slurm-token` again.
+The token is stored in `~/.config/rsdat/slurm.env` and read on every Slurm command, so nothing needs a restart. `rsdat-slurm-token --status` shows for whom it is and when it expires; when it has, run `rsdat-slurm-token` again.
 
 **Dask.** In JupyterLab, open the Dask sidebar and click **New** to create a cluster, then **Scale** it. In a notebook:
 
@@ -141,7 +144,10 @@ Scheduler (workspace) and workers exchange functions and data with cloudpickle a
 
 - `worker-image/requirements.txt` pins them. The playbook installs it on the workspace, and the worker image installs the same file.
 - `worker-image/worker.def` builds the worker image: an Apptainer image on Python 3.12, the same as Ubuntu 24.04.
-- `.github/workflows/worker-image.yml` builds it on changes to `worker-image/`, checks the versions and the Python version, and pushes it to `oras://ghcr.io/<owner>/<repo>-worker` with tags `<dask version>`, `<commit>` and `latest`. It's based on [RS-DAT/JDS_development_template](https://github.com/RS-DAT/JDS_development_template). Unlike the template it uses pip with this repo's exact pins instead of conda, so the image matches the workspace's pip environment.
+- `.github/workflows/worker-image.yml` builds it on pushes to `main` that change `worker-image/` and on release tags (`v*`), checks the versions and the Python version, and pushes it to `oras://ghcr.io/<owner>/<repo>-worker` with these tags:
+  - `req-<hash>`: the first 12 characters of the SHA-256 of `requirements.txt` + `worker.def`. The playbook computes the same hash and uses this tag by default, so a workspace always gets the image with exactly its own packages, and nothing needs updating when the image is rebuilt. The image must have been built for that version of `worker-image/` (pushed to `main` or tagged); on a branch with changed requirements it doesn't exist yet.
+  - `<commit>` (7 characters): fixed, for pinning by hand.
+  - `<dask version>` and `latest`: moved by every build. It's based on [RS-DAT/JDS_development_template](https://github.com/RS-DAT/JDS_development_template). Unlike the template it uses pip with this repo's exact pins instead of conda, so the image matches the workspace's pip environment.
 
 With `rsdat_dask_worker_image` set, workers run in the image with the host's directories bound, as in the template. If compute nodes can't reach ghcr.io, pull the image on a login node first and point the parameter at the file:
 

@@ -1,15 +1,22 @@
 ---
 # Directory JupyterLab opens in
 rsdat_jupyterlab_root_dir: "{{ rsdat_home }}"
+# Open the start-here notebook when someone opens JupyterLab (false: JupyterLab's own start page)
+rsdat_jupyterlab_open_start_here: true
+rsdat_start_here_dir: /opt/rsdat/share
 
 # --- Dask workers on Slurm (defaults for the Dask extension's "New" cluster button and for
 # dask_jobqueue.SLURMCluster() in notebooks; both can be overridden per cluster) ---
-# Worker environment on the cluster. Either:
-# - rsdat_dask_worker_image: the worker image built from worker-image/ (same versions as this
-#   workspace), e.g. "oras://ghcr.io/hpc-dat/src-component-rsdat-worker:2026.8.0" (compute nodes
-#   need registry access) or a .sif file on the cluster ("apptainer pull" it on a login node), or
+# Worker environment on the cluster:
+# - default: the worker image built from this checkout's worker-image/ by the GitHub workflow,
+#   tagged req-<hash of requirements.txt and worker.def>, so it has exactly the workspace's
+#   packages: <rsdat_dask_worker_image_repo>:req-<hash>. Exists once that version of
+#   worker-image/ has been built (pushed to main).
+# - rsdat_dask_worker_image: another image, e.g. a fixed tag or a .sif file on the cluster
+#   ("apptainer pull" it on a login node when compute nodes can't reach the registry), or
 # - rsdat_dask_worker_python: a Python on the cluster with exactly the versions in
 #   worker-image/requirements.txt and Python rsdat_dask_python_version.
+rsdat_dask_worker_image_repo: "oras://ghcr.io/hpc-dat/src-component-rsdat-worker"
 rsdat_dask_worker_image: ""
 rsdat_dask_worker_python: ""
 # Extra 'apptainer exec' options, e.g. ["--nv"] for GPUs

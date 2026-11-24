@@ -25,7 +25,7 @@
      project space, scratch, $TMPDIR, ...) as in RS-DAT/JDS_development_template. Not the
      system directories: the host's /usr, /opt, /etc, ... would hide the image's own Python
      and libraries. /tmp is bound by Apptainer itself. #}
-{%   set worker_python = (['apptainer', 'exec'] + (rsdat_dask_worker_apptainer_args | list) + [rsdat_dask_worker_image, 'python']) | join(' ') %}
+{%   set worker_python = (['apptainer', 'exec'] + (rsdat_dask_worker_apptainer_args | list) + [rsdat_dask_worker_image_effective, 'python']) | join(' ') %}
 {%   set prologue = prologue + [
        'export APPTAINER_BIND=$(ls -1 / | grep -vxE "bin|boot|dev|etc|lib|lib32|lib64|libx32|lost\\+found|media|opt|proc|root|run|sbin|srv|sys|tmp|usr|var" | sed "s|^|/|" | paste -sd, -)',
        'export APPTAINER_TMPDIR="${TMPDIR:-/tmp}"'

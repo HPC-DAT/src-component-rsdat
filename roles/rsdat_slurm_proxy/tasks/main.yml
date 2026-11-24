@@ -43,3 +43,15 @@
     content: |
       # RS-DAT: Slurm commands through the Slurm REST API (SLURM-CLI-API-Proxy)
       case ":$PATH:" in *":{{ rsdat_slurm_bin }}:"*) ;; *) export PATH="{{ rsdat_slurm_bin }}:$PATH" ;; esac
+
+# JupyterLab terminals are login shells: greet them with the token's state
+- name: Token status in new terminals
+  ansible.builtin.copy:
+    dest: /etc/profile.d/rsdat-welcome.sh
+    mode: "0644"
+    content: |
+      # RS-DAT: show the Slurm token's state in interactive shells (e.g. JupyterLab terminals)
+      if [ -n "${PS1:-}" ] && [ -t 1 ] && [ -x {{ rsdat_slurm_bin }}/rsdat-slurm-token ]; then
+          echo "RS-DAT workspace: Dask on Slurm through the Slurm REST API. Guide: ~/RS-DAT-start-here.ipynb"
+          {{ rsdat_slurm_bin }}/rsdat-slurm-token --status || true
+      fi

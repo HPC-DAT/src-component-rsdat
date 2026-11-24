@@ -37,6 +37,8 @@ chmod 644 /tmp/prefect_check.py
 PREFECT_ENV="set -a; . /etc/rsdat/prefect-client.env; set +a"
 check "Prefect API refuses requests without the password" bash -c '[ "$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{}" http://localhost/prefect/api/flows/filter)" = 401 ]'
 check "Prefect flow runs against the server (JupyterLab environment)" as_user "$PREFECT_ENV; $VENV/bin/python /tmp/prefect_check.py"
+check "Start-here notebook in the home directory, opened on /jupyter/" bash -c 'test -s /home/rsdat/RS-DAT-start-here.ipynb && curl -s -o /dev/null -w "%{redirect_url}" http://localhost/jupyter/ | grep -q "lab/tree/RS-DAT-start-here.ipynb"'
+check "New terminals show the Slurm token's state" as_user 'script -qc "bash -li -c exit" /dev/null | grep -q "Slurm token for testuser, valid until"'
 check "Slurm commands on PATH via the proxy" as_user 'test "$(command -v sbatch)" = /opt/rsdat/slurm-bin/sbatch && squeue >/dev/null'
 cat > /tmp/sbatch_check.sh <<'SH'
 set -e
