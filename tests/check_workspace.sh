@@ -99,7 +99,7 @@ with Client(cluster) as client:
             assert info["nanny"].rsplit(":", 1)[1].startswith("401"), info["nanny"]
     if not on_cluster and os.environ.get("RSDAT_EXPECT_ROUTE") == "gateway":
         names = [info["name"] for info in workers.values()]
-        assert "rsdat-gateway" in names, f"no worker in the gateway job: {names}"
+        assert any(n.startswith("rsdat-gateway") for n in names), f"no worker in the gateway job: {names}"
     # the scheduler can reach the nannies (restart) and results reach this notebook
     client.restart()
     client.wait_for_workers(2, timeout=120)
@@ -181,6 +181,50 @@ echo "$out" | grep -q "Slurm REST API at http://127.0.0.1:9" && [ $(( $(date +%s
 SH
 chmod 644 /tmp/wrong_url_check.sh
 check "Wrong Slurm REST API URL: a new cluster fails quickly with a clear message" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; cd ~ && bash /tmp/wrong_url_check.sh"
+
+# Gateway renewal: a gateway job with a 4-minute walltime is replaced a minute before it ends
+# (a quarter of its walltime), while the cluster keeps working: results keep coming back and
+# data on the old gateway's worker survives
+if [ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && [ "${RSDAT_EXPECT_ROUTE:-direct}" = gateway ]; then
+cat > /tmp/gateway_renew.py <<'PY'
+import asyncio, time
+from distributed import Client
+from rsdat_dask import RSDATSLURMCluster, _GATEWAY, _job_state
+
+cluster = RSDATSLURMCluster()
+first = _GATEWAY.job
+cluster.scale(jobs=1)
+client = Client(cluster)
+client.wait_for_workers(2, timeout=300)
+# data on every worker, including the old gateway's
+data = client.scatter(list(range(8)), broadcast=False)
+t0, worst = time.time(), 0.0
+while time.time() - t0 < 330 and _GATEWAY.job is first:
+    t = time.time()
+    assert client.submit(lambda: 41 + 1).result(timeout=60) == 42
+    worst = max(worst, time.time() - t)
+    time.sleep(5)
+assert _GATEWAY.job is not first, "gateway job not replaced before its walltime"
+print("replaced", first.job_id, "by", _GATEWAY.job.job_id, "after", int(time.time() - t0), "s; slowest result", round(worst, 1), "s")
+for _ in range(30):
+    t = time.time()
+    assert client.submit(lambda: 7).result(timeout=60) == 7
+    worst = max(worst, time.time() - t)
+    if asyncio.run(_job_state(first)) not in ("RUNNING", "PENDING"):
+        break
+    time.sleep(2)
+state = asyncio.run(_job_state(first))
+assert state not in ("RUNNING", "PENDING", "TIMEOUT"), f"old gateway job {first.job_id}: {state}"
+assert sum(client.gather(data)) == sum(range(8)), "data lost in the renewal"
+assert worst < 30, f"a result took {worst:.0f} s during the renewal"
+names = [w["name"] for w in client.scheduler_info()["workers"].values()]
+assert "rsdat-gateway-1" not in names and any(n.startswith("rsdat-gateway-") for n in names), names
+cluster.close()
+print("OK", state, names)
+PY
+chmod 644 /tmp/gateway_renew.py
+check "Gateway job replaced before its walltime without a gap" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH DASK_RSDAT__GATEWAY__WALLTIME=00:04:00; cd ~ && timeout 600 python /tmp/gateway_renew.py"
+fi
 
 # Gateway: a process that ends without closing its cluster doesn't leave the gateway job behind
 if [ "${RSDAT_EXPECT_SCHEDULER:-workspace}" = workspace ] && [ "${RSDAT_EXPECT_ROUTE:-direct}" = gateway ]; then

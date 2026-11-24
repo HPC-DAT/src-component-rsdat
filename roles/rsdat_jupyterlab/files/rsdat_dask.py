@@ -221,6 +221,25 @@ async def _job_state(job):
 
 _ALIVE = ("PENDING", "CONFIGURING", "RUNNING", "UNKNOWN")
 
+
+async def _job_times(job):
+    """(start, end) of a running job as epoch seconds from squeue, or (None, None)."""
+    def num(v):
+        if isinstance(v, dict):
+            v = v.get("number") if v.get("set", True) and not v.get("infinite") else None
+        try:
+            return int(v) or None
+        except (TypeError, ValueError):
+            return None
+    try:
+        jobs = json.loads(await job._call(["squeue", "--json"])).get("jobs", [])
+    except Exception:
+        return None, None
+    for j in jobs:
+        if str(j.get("job_id")) == str(job.job_id):
+            return num(j.get("start_time")), num(j.get("end_time"))
+    return None, None
+
 # Slurm commands go through the REST API: without a timeout a wrong or unreachable API URL
 # leaves a new cluster waiting silently
 SLURM_CALL_TIMEOUT = 120
@@ -480,7 +499,7 @@ class RSDATGatewayJob(SLURMJob):
     through the proxy)."""
 
     def __init__(self, socks_port, network, lease_port, worker_scheduler=None, security=None,
-                 **kwargs):
+                 worker_name="rsdat-gateway", **kwargs):
         cfg = dask.config.get("rsdat.gateway", default={}) or {}
         tunnel = dask.config.get("rsdat.tunnel", default={}) or {}
         prologue = list(dask.config.get(f"jobqueue.{self.config_name}.job-script-prologue",
@@ -510,7 +529,7 @@ class RSDATGatewayJob(SLURMJob):
             self._job_script_prologue += tls_lines
             # the worker gets less than the job, so it can't slow down the tunnel (ssh)
             helper = SLURMJob(scheduler=worker_scheduler_address(worker_scheduler),
-                              name="rsdat-gateway", processes=1,
+                              name=worker_name, processes=1,
                               cores=cfg.get("worker-cores") or cfg.get("cores", 1),
                               memory=cfg.get("worker-memory") or cfg.get("memory", "1GiB"),
                               security=remote_security)
@@ -679,11 +698,14 @@ class _Gateway:
         self._checking = False
         self.lease_port = None
         self._lease = None
+        self._retirers = []           # per cluster: retire a worker by name (before a renewal)
         atexit.register(self._cancel_at_exit)
 
-    async def acquire(self, network, worker_scheduler=None, security=None):
+    async def acquire(self, network, worker_scheduler=None, security=None, retire=None):
         with self._mutex:
             self.users += 1
+            if retire is not None:
+                self._retirers.append(retire)
             first = self.job is None and not self._starting
             if first:
                 self._starting = True
@@ -702,24 +724,38 @@ class _Gateway:
         except BaseException:
             with self._mutex:
                 self.users -= 1
+                if retire in self._retirers:
+                    self._retirers.remove(retire)
             raise
 
     async def _start(self, network):
-        cfg = dask.config.get("rsdat.gateway", default={}) or {}
         _install_gateway_client()
         self.network = ipaddress.ip_network(network, strict=False)
         self.port = self.port or _free_local_port()
         # a port for the lease listener on the job's node (random; collisions there are unlikely)
         self.lease_port = self.lease_port or _free_local_port()
+        job, deadline = await self._launch(network, self.port, self.lease_port)
+        self.job = job
+        _ROUTES[self.network] = self.port
+        await self._renew_lease(deadline)
+        logger.info("Gateway job %s: connections to %s go through 127.0.0.1:%s",
+                    job.job_id, self.network, self.port)
+
+    async def _launch(self, network, port, lease_port):
+        """Submit a gateway job and wait until its SOCKS proxy answers on 127.0.0.1:port."""
+        cfg = dask.config.get("rsdat.gateway", default={}) or {}
         worker_scheduler, security = getattr(self, "_worker", (None, None))
-        job = RSDATGatewayJob(self.port, network, self.lease_port,
-                              worker_scheduler=worker_scheduler, security=security)
+        self._generation = getattr(self, "_generation", 0) + 1
+        # each gateway's worker needs its own name: during a renewal two are connected
+        job = RSDATGatewayJob(port, network, lease_port, worker_scheduler=worker_scheduler,
+                              security=security, worker_name=f"rsdat-gateway-{self._generation}")
+        job.rsdat_worker_name = f"rsdat-gateway-{self._generation}" if worker_scheduler else None
         await _submit(job)
         timeout = float(cfg.get("start-timeout", 900))
         deadline = time.monotonic() + timeout
-        logger.info("Waiting for gateway job %s (SOCKS on 127.0.0.1:%s)", job.job_id, self.port)
+        logger.info("Waiting for gateway job %s (SOCKS on 127.0.0.1:%s)", job.job_id, port)
         unknown_since = None
-        while not await _socks_ok(self.port):
+        while not await _socks_ok(port):
             state = await _job_state(job)
             unknown_since = (unknown_since or time.monotonic()) if state == "UNKNOWN" else None
             if unknown_since and time.monotonic() - unknown_since > SLURM_UNKNOWN_LIMIT:
@@ -735,11 +771,47 @@ class _Gateway:
                 raise RuntimeError(f"Dask gateway job {job.job_id} not reachable after "
                                    f"{timeout:.0f}s (state {state}); job cancelled")
             await asyncio.sleep(3)
-        self.job = job
-        _ROUTES[self.network] = self.port
+        return job, deadline
+
+    async def _renew_before_walltime(self):
+        """Replace the gateway job before its walltime, without a gap: start a new one on a new
+        port, switch the connections to the workers over once its tunnel works, retire the old
+        gateway's worker (its data moves to other workers) and cancel the old job."""
+        cfg = dask.config.get("rsdat.gateway", default={}) or {}
+        start, end = await _job_times(self.job)
+        if not start or not end:
+            return
+        # 30 minutes before the walltime by default; at most a quarter of the job's walltime,
+        # so a short walltime doesn't mean renewing all the time
+        before = min(float(cfg.get("renew-before", 1800)), (end - start) / 4)
+        if time.time() < end - before:
+            return
+        old_job, old_lease = self.job, self._lease
+        logger.info("Gateway job %s ends at %s: starting its replacement", old_job.job_id,
+                    time.strftime("%H:%M", time.localtime(end)))
+        port, lease_port = _free_local_port(), _free_local_port()
+        try:
+            job, deadline = await self._launch(str(self.network), port, lease_port)
+        except Exception:
+            logger.exception("Could not start a replacement for gateway job %s; trying again "
+                             "at the next check", old_job.job_id)
+            return
+        # new connections to the workers go through the new tunnel; open ones stay on the old
+        # tunnel until it closes, then distributed reconnects through the new one
+        self.job, self.port, self.lease_port, self._lease = job, port, lease_port, None
+        _ROUTES[self.network] = port
         await self._renew_lease(deadline)
-        logger.info("Gateway job %s: connections to %s go through 127.0.0.1:%s",
-                    job.job_id, self.network, self.port)
+        logger.info("Gateway job %s replaced by %s (SOCKS on 127.0.0.1:%s)",
+                    old_job.job_id, job.job_id, port)
+        name = getattr(old_job, "rsdat_worker_name", None)
+        if name and self._retirers:
+            try:
+                await asyncio.wait_for(self._retirers[0](name), 300)
+            except Exception:
+                logger.warning("Could not retire %s gracefully; its tasks are recomputed", name)
+        if old_lease is not None:
+            old_lease.close()
+        await old_job.close()
 
     async def _renew_lease(self, deadline=None):
         """(Re)open the lease connection; the job ends without one (rsdat.gateway.idle-timeout)."""
@@ -778,6 +850,7 @@ class _Gateway:
         try:
             if await _socks_ok(self.port):
                 await self._renew_lease()
+                await self._renew_before_walltime()
                 return
             state = await _job_state(self.job)
             if state in _ALIVE:
@@ -795,9 +868,11 @@ class _Gateway:
         finally:
             self._checking = False
 
-    async def release(self):
+    async def release(self, retire=None):
         with self._mutex:
             self.users -= 1
+            if retire in self._retirers:
+                self._retirers.remove(retire)
             last = self.users == 0
             job = self.job if last else None
             if last:
@@ -842,7 +917,8 @@ class RSDATSLURMCluster(SLURMCluster):
                                        default=8786)
                 proto = "tls" if self.security is not None and self.security.require_encryption else "tcp"
                 worker_scheduler = f"{proto}://0.0.0.0:{int(port)}"
-            await _GATEWAY.acquire(self._gateway_network, worker_scheduler, self.security)
+            await _GATEWAY.acquire(self._gateway_network, worker_scheduler, self.security,
+                                   retire=self._retire_worker)
             self._gateway_acquired = True
             self.periodic_callbacks["rsdat-gateway"] = PeriodicCallback(_GATEWAY.check, 30_000)
         try:
@@ -860,7 +936,11 @@ class RSDATSLURMCluster(SLURMCluster):
     async def _release_gateway(self):
         if self._gateway_acquired:
             self._gateway_acquired = False
-            await _GATEWAY.release()
+            await _GATEWAY.release(self._retire_worker)
+
+    async def _retire_worker(self, name):
+        """Retire a worker by name: the scheduler moves its data to other workers first."""
+        await self.scheduler_comm.retire_workers(names=[name], close_workers=True)
 
     def _get_worker_security(self, security):
         # dask-jobqueue would dump in-memory credentials to a shared directory and pass paths;
