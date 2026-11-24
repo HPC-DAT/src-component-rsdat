@@ -46,9 +46,3 @@ location {{ rsdat_prefect_path }} {
 {{ proxy_headers() }}
 }
 {% endif %}
-{% if rsdat_nginx_root_redirect | bool %}
-
-location = / {
-    return 302 {{ rsdat_jupyterlab_path }};
-}
-{% endif %}

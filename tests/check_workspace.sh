@@ -13,6 +13,7 @@ wait_http() { for _ in $(seq 60); do curl -fs -o /dev/null "$1" && return 0; sle
 check "services active" systemctl is-active rsdat-jupyterlab rsdat-prefect nginx
 check "JupyterLab via nginx (/jupyter/api/status)" wait_http http://localhost/jupyter/api/status
 check "JupyterLab UI page" bash -c 'curl -fsL http://localhost/jupyter/lab | grep -q "JupyterLab"'
+check "/ redirects to JupyterLab" bash -c 'curl -fsI http://localhost/ | grep -qiE "^location: .*/jupyter/"'
 check "Dask and git lab extensions installed" bash -c "$VENV/bin/jupyter labextension list 2>&1 | grep -q dask-labextension && $VENV/bin/jupyter labextension list 2>&1 | grep -q '@jupyterlab/git'"
 check "jupyter-server-proxy enabled" bash -c "$VENV/bin/jupyter server extension list 2>&1 | grep -q 'jupyter_server_proxy.*enabled'"
 check "Prefect API via nginx (/prefect/api/health)" bash -c 'wait_http() { for _ in $(seq 90); do curl -fs "$1" | grep -q true && return 0; sleep 2; done; return 1; }; wait_http http://localhost/prefect/api/health'

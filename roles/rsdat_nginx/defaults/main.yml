@@ -2,6 +2,7 @@
 # Authentication in front of JupyterLab and Prefect: 'sram' (SRC-Nginx SRAM login) or 'none'
 # (testing only: JupyterLab has no login of its own in this setup).
 rsdat_nginx_auth: sram
-# Redirect https://<workspace>/ to JupyterLab. Leave off if another component serves '/'.
-rsdat_nginx_root_redirect: false
+# Redirect https://<workspace>/ to JupyterLab (instead of SRC-Nginx's 403). Left out
+# automatically when nginx doesn't accept it (another component already has 'location = /').
+rsdat_nginx_root_redirect: true
 rsdat_nginx_app_config_dir: /etc/nginx/app-location-conf.d

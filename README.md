@@ -78,7 +78,7 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_prefect_api_auth` | `true` | Protect the Prefect API with a generated password (`/etc/rsdat/prefect-api-password`) instead of SRAM, so Dask workers can report Prefect task states |
 | `rsdat_prefect_api_url` | `https://<rsdat_fqdn>/prefect/api` | Prefect API for notebooks and Dask workers; without nginx `http://<rsdat_fqdn>:4200/api` |
 | `rsdat_fqdn_resolve_locally` | `true` | Resolve `rsdat_fqdn` to `127.0.0.1` on the workspace (`/etc/hosts`) |
-| `rsdat_nginx_root_redirect` | `false` | Redirect `/` to JupyterLab (only if no other component serves `/`) |
+| `rsdat_nginx_root_redirect` | `true` | Redirect `https://<workspace>/` to JupyterLab; left out automatically if nginx doesn't accept it (another component already has `location = /`) |
 | `rsdat_user` | `rsdat` | Unix user that runs JupyterLab and Prefect |
 
 Package versions are in `worker-image/` (see [Worker environment](#worker-environment)); other settings are in `group_vars/all.yml` and `roles/*/defaults/main.yml`.
