@@ -232,8 +232,13 @@ def _slurm_api_url():
 
 
 def _slurm_hint(error):
-    detail = str(error).strip().splitlines()
-    detail = " ".join(l.strip() for l in detail if l.strip() and not l.startswith(("Command", "Exit code")))
+    text = str(error)
+    # dask-jobqueue's message for a failed command: keep what the command itself printed
+    for marker in ("stderr:\n", "stdout:\n"):
+        if marker in text and text.split(marker, 1)[1].strip():
+            text = text.split(marker, 1)[1].split("stderr:\n")[0]
+            break
+    detail = " ".join(l.strip() for l in text.splitlines() if l.strip())
     return (f"The Slurm REST API at {_slurm_api_url()} didn't work: {detail[:500]}\n"
             "Check the token (rsdat-slurm-token --status) and the API URL (rsdat_slurm_api_url).")
 
