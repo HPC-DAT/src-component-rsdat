@@ -45,19 +45,7 @@ rsdat_dask_local_directory: "${TMPDIR:-/tmp}"
 
 # --- Networking between the scheduler (in JupyterLab on this workspace) and the workers on
 # the cluster (see README, "Networking") ---
-# Where the Dask scheduler runs:
-# - "workspace": in JupyterLab here. Workers connect to it on rsdat_dask_scheduler_port; how it
-#   reaches the workers is set by rsdat_dask_worker_route.
-# - "cluster": as a Slurm job next to the workers; it opens a reverse SSH tunnel to this
-#   workspace (port rsdat_dask_tunnel_port), which notebooks connect through. Only the cluster
-#   opens connections.
-rsdat_dask_scheduler_location: workspace
-# Scheduler on the workspace: how it reaches the workers
-# - "gateway": through a small gateway job on the cluster that opens a reverse SSH tunnel to
-#   this workspace (a SOCKS proxy into rsdat_dask_worker_network). For when the workspace
-#   can't connect to the compute nodes (Snellius).
-# - "direct": directly; the cluster firewall must allow the workspace to reach the workers.
-rsdat_dask_worker_route: gateway
+# rsdat_dask_scheduler_location and rsdat_dask_worker_route: see group_vars/all.yml
 
 # --- gateway job (scheduler on the workspace, worker route "gateway") ---
 # Resources (partition and account: as the workers). One gateway per JupyterLab process,

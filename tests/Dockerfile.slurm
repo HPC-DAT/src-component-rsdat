@@ -1,11 +1,12 @@
 # The Slurm test image plus what a Snellius compute node has and the test needs: an SSH client
-# (the gateway's and scheduler's tunnels), iptables (blocking the workspace like the cluster
+# (the gateway's and scheduler's tunnels), an SSH server and python3 (the login node for Slurm
+# over SSH and sshuttle; started by run.sh when used), iptables (blocking the workspace like the cluster
 # firewall), and the worker image's packages (worker-image/requirements.txt, copied into the
 # build context by run.sh) in the Dask environment.
 ARG BASE=slurm-cli-proxy-test
 FROM ${BASE}
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client iptables \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client openssh-server python3 iptables \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /tmp/worker-requirements.txt
 RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/worker-requirements.txt
