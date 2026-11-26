@@ -98,8 +98,18 @@ tar -C "$REPO" --exclude=.git -cf - . | docker exec -i "$WS" tar -C /opt/src-com
 
 run_playbook() {
     # shellcheck disable=SC2086
-    docker exec ${EXTRA_ENV:-} -w /opt/src-component-rsdat "$WS" ansible-playbook "$@"
+    # with SRC's strict umask: everything the services and users need must get explicit modes
+    docker exec ${EXTRA_ENV:-} -w /opt/src-component-rsdat "$WS" \
+        sh -c 'umask 077; exec ansible-playbook "$@"' sh "$@"
 }
+# As on SRC workspaces: root's "python3" is a uv-managed Python in /root/.local (which rsdat
+# can't use); the environment must still be made from Ubuntu's /usr/bin/python3
+echo "== root's python3: a uv-managed Python in /root/.local"
+docker exec "$WS" bash -c 'set -e; [ -x /usr/local/bin/python3 ] && exit 0
+    /usr/bin/python3 -m venv /tmp/uv-bootstrap && /tmp/uv-bootstrap/bin/pip install -q uv
+    UV_SYSTEM_CERTS=1 /tmp/uv-bootstrap/bin/uv python install -q 3.12
+    ln -s "$(ls -d /root/.local/share/uv/python/cpython-3.12*/bin/python3.12 | head -1)" /usr/local/bin/python3
+    echo "python3 is now $(readlink -f "$(command -v python3)")"'
 echo "== mock SRC-Nginx"
 run_playbook tests/mock_src_nginx.yml
 echo "== rsdat.yml"
@@ -130,7 +140,7 @@ rsdat_dask_scheduler_walltime: "00:15:00"
 rsdat_dask_tunnel_host: "$CONTACT_HOST"
 rsdat_dask_contact_host: "$CONTACT_HOST"
 # the Dask workers (Prefect tasks) reach the Prefect API through the mock nginx (no TLS)
-rsdat_prefect_api_url: "http://$CONTACT_HOST/prefect/api"
+rsdat_prefect_api_url: "http://$CONTACT_HOST/prefect/machine-api"
 VARS
 docker cp /tmp/rsdat-test-vars.$$.yml "$WS":/opt/src-component-rsdat/tests/test-vars.yml
 rm -f /tmp/rsdat-test-vars.$$.yml
