@@ -41,8 +41,13 @@ check "Prefect API for the browser (/prefect/api/): after the SRAM login without
 check "Prefect UI doesn't ask for the password behind the SRAM login" bash -c 'curl -fs http://localhost/prefect/ui-settings | tee /dev/stderr | grep -q "\"auth\":null" && curl -fs http://127.0.0.1:4200/prefect/ui-settings | grep -q "\"auth\":\"BASIC\""'
 check "Prefect flow runs against the server (JupyterLab environment)" as_user "$PREFECT_ENV; $VENV/bin/python /tmp/prefect_check.py"
 check "Start-here notebook in the home directory, opened on /jupyter/" bash -c 'test -s /home/rsdat/RS-DAT-start-here.ipynb && curl -s -o /dev/null -w "%{redirect_url}" http://localhost/jupyter/ | grep -q "lab/tree/RS-DAT-start-here.ipynb"'
+if [ "${RSDAT_EXPECT_ACCESS:-api}" = api ]; then
 check "New terminals show the Slurm token's state" as_user 'script -qc "bash -li -c exit" /dev/null | grep -q "Slurm token for testuser, valid until"'
-check "Slurm commands on PATH via the proxy" as_user 'test "$(command -v sbatch)" = /opt/rsdat/slurm-bin/sbatch && squeue >/dev/null'
+else
+check "New terminals show the SSH hint" as_user 'script -qc "bash -li -c exit" /dev/null | grep -q "Dask on Slurm over SSH"'
+check "Start-here notebook shows the SSH key step" grep -q "portal.cua.surf.nl" /home/rsdat/RS-DAT-start-here.ipynb
+fi
+check "Slurm commands on PATH (${RSDAT_EXPECT_ACCESS:-api})" as_user 'test "$(command -v sbatch)" = /opt/rsdat/slurm-bin/sbatch && squeue >/dev/null'
 cat > /tmp/sbatch_check.sh <<'SH'
 set -e
 printf '#!/bin/bash\n#SBATCH -J rsdat-check\n#SBATCH -t 00:05:00\nsleep 60\n' > /tmp/rsdat-check-job.sh
@@ -52,7 +57,7 @@ squeue | grep -q "$id"
 scancel "$id"
 SH
 chmod 644 /tmp/sbatch_check.sh
-check "sbatch/squeue/scancel through the REST API" as_user "bash /tmp/sbatch_check.sh"
+check "sbatch/squeue/scancel ($([ "${RSDAT_EXPECT_ACCESS:-api}" = ssh ] && echo "over SSH" || echo "through the REST API"))" as_user "bash /tmp/sbatch_check.sh"
 
 # Dask cluster with the workspace defaults (/etc/dask/rsdat.yaml), as in a notebook
 cat > /tmp/dask_check.py <<'PY'
@@ -171,6 +176,7 @@ chmod 644 /tmp/prefect_dask_check.py
 check "Prefect flow with DaskTaskRunner: tasks on the Slurm workers, states on the server" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; $PREFECT_ENV; cd ~ && timeout 600 python /tmp/prefect_dask_check.py"
 
 # A wrong Slurm REST API URL: creating a cluster fails quickly with a message naming the API
+if [ "${RSDAT_EXPECT_ACCESS:-api}" = api ]; then
 cat > /tmp/wrong_url_check.sh <<'SH'
 set -e
 mkdir -p ~/.config/rsdat
@@ -184,6 +190,7 @@ echo "$out" | grep -q "Slurm REST API at http://127.0.0.1:9" && [ $(( $(date +%s
 SH
 chmod 644 /tmp/wrong_url_check.sh
 check "Wrong Slurm REST API URL: a new cluster fails quickly with a clear message" as_user "export PATH=/opt/rsdat/slurm-bin:$VENV/bin:\$PATH; cd ~ && bash /tmp/wrong_url_check.sh"
+fi
 
 # Gateway renewal: a gateway job with a 4-minute walltime is replaced a minute before it ends
 # (a quarter of its walltime), while the cluster keeps working: results keep coming back and

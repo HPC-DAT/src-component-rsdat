@@ -18,6 +18,8 @@ private network with the cluster. Where the scheduler runs depends on ``rsdat.sc
     process connects to addresses in ``rsdat.gateway.network`` (the workers) through it; other
     connections go directly. For when the workspace can't connect to the compute nodes.
   - ``direct``: the scheduler connects to the workers directly.
+  - ``sshuttle``: as ``direct`` for Dask; the component's rsdat-sshuttle service routes the
+    worker network through an SSH connection to the login node.
 
 In both, TLS is on when the dask config requires encryption (``distributed.comm.require-encryption``,
 set by the component), with the workspace's certificates (``distributed.comm.tls.*``).
@@ -272,6 +274,12 @@ def _command_output(error):
 
 
 def _slurm_hint(error):
+    if dask.config.get("rsdat.slurm-access", default="api") == "ssh":
+        host = dask.config.get("rsdat.slurm-host", default=None) or "the login node"
+        return (f"Slurm over SSH to {host} didn't work: {_command_output(error)}\n"
+                "Check that the workspace's key (~/.config/rsdat/slurm-ssh/id_ed25519.pub) is "
+                "registered in the SURF CUA portal (https://portal.cua.surf.nl) for your user; "
+                "test with: ssh -F /etc/rsdat/slurm-ssh.conf rsdat-slurm true")
     return (f"The Slurm REST API at {_slurm_api_url()} didn't work: {_command_output(error)}\n"
             "Check the token (rsdat-slurm-token --status) and the API URL (rsdat_slurm_api_url).")
 

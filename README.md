@@ -3,7 +3,7 @@
 SURF Research Cloud component (Ansible) for **RS-DAT** on an Ubuntu workspace:
 
 - **JupyterLab** with the **Dask** extension (`dask-labextension`) and the **git** extension (`jupyterlab-git`)
-- **Dask on Slurm**: the Dask scheduler runs on the workspace (in JupyterLab), the workers run as jobs on a remote Slurm cluster. The workspace never has to connect to the compute nodes: a small gateway job opens an SSH tunnel back to the workspace, through which the scheduler reaches the workers (see [Networking](#networking)). Jobs are submitted and cancelled through the cluster's **Slurm REST API**, using the [SLURM-CLI-API-Proxy client](https://github.com/SLURM-CLI-API-Proxy/SLURM-CLI-API-Proxy-client) (`sbatch`, `squeue`, `scancel`, … over REST). The workspace needs no Slurm installation, no munge and no SSH access to the cluster.
+- **Dask on Slurm**: the Dask scheduler runs on the workspace (in JupyterLab), the workers run as jobs on a remote Slurm cluster. The workspace never has to connect to the compute nodes: a small gateway job opens an SSH tunnel back to the workspace, through which the scheduler reaches the workers (see [Networking](#networking)). Jobs are submitted and cancelled through the cluster's **Slurm REST API**, using the [SLURM-CLI-API-Proxy client](https://github.com/SLURM-CLI-API-Proxy/SLURM-CLI-API-Proxy-client) (`sbatch`, `squeue`, `scancel`, … over REST). The workspace needs no Slurm installation, no munge and no SSH access to the cluster. Alternatively, the Slurm commands run on the login node over SSH (`rsdat_slurm_access: ssh`, see [Slurm over SSH](#slurm-over-ssh)).
 - **Prefect server** (UI and API) for workflows
 
 JupyterLab and Prefect are published through **SRC-Nginx** with SRAM login, at `https://<workspace>/jupyter/` and `https://<workspace>/prefect/`.
@@ -22,7 +22,7 @@ Status: prototype (RS-DAT catalogue item for HPC-DAT). Tested on Ubuntu 24.04 in
 
 1. Create an Ansible component in the Research Cloud portal pointing to this repository, playbook `rsdat.yml`.
 2. In the catalogue item, put the **SRC-Nginx** component (and SRC-External/SRAM as usual) **before** this one.
-3. Set the component parameters (below). The required ones are `rsdat_slurm_api_url` and the worker environment: `rsdat_dask_worker_image` or `rsdat_dask_worker_python`. On Snellius, also set `rsdat_dask_worker_network: 172.18.0.0/16` (internal network), and allow TCP 8786 into the workspace from the compute nodes' egress addresses.
+3. Set the component parameters (below). The required ones are `rsdat_slurm_api_url` (or, with `rsdat_slurm_access: ssh`, `rsdat_slurm_host` and `rsdat_slurm_user`) and the worker environment: `rsdat_dask_worker_image` or `rsdat_dask_worker_python`. On Snellius, also set `rsdat_dask_worker_network: 172.18.0.0/16` (internal network), and allow TCP 8786 into the workspace from the compute nodes' egress addresses.
 
 Locally, on an Ubuntu machine with SRC-Nginx:
 
@@ -38,9 +38,11 @@ sudo ansible-playbook rsdat.yml \
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `rsdat_slurm_api_url` | — (required) | Slurm REST API of the cluster, e.g. `https://slurm.snellius.surf.nl` |
+| `rsdat_slurm_access` | `api` | How the workspace runs the Slurm commands: `api` (Slurm REST API, with a token) or `ssh` (on `rsdat_slurm_host` over SSH, see [Slurm over SSH](#slurm-over-ssh)) |
+| `rsdat_slurm_api_url` | — (required with `api`) | Slurm REST API of the cluster, e.g. `https://slurm.snellius.surf.nl` |
+| `rsdat_slurm_host` | `""` | Login node, e.g. `snellius.surf.nl`. Required with `ssh` access or the `sshuttle` route |
 | `rsdat_slurm_api_check` | `true` | Check at deployment that `rsdat_slurm_api_url` answers; a new Dask cluster also checks the API first and fails within seconds with a clear message |
-| `rsdat_slurm_user`, `rsdat_slurm_jwt` | `""` | Optional Slurm user and token (`scontrol token lifespan=…`) for everyone on the workspace. **Secret.** Users can also set their own token, see below |
+| `rsdat_slurm_user`, `rsdat_slurm_jwt` | `""` | Optional Slurm user and token (`scontrol token lifespan=…`) for everyone on the workspace. **Secret.** Users can also set their own token, see below. With `ssh` access or the `sshuttle` route, `rsdat_slurm_user` is the SSH login user (required) |
 | `rsdat_dask_worker_image` | the image built from this checkout's `worker-image/` | Worker image (see [Worker environment](#worker-environment)). Default: `<rsdat_dask_worker_image_repo>:req-<hash of worker-image/>`, the image with exactly the workspace's packages. Or a fixed tag, or a `.sif` file on the cluster |
 | `rsdat_dask_worker_image_repo` | `oras://ghcr.io/hpc-dat/src-component-rsdat-worker` | Where the workflow pushes the worker image |
 | `rsdat_dask_worker_python` | `""` | Instead of an image: a Python **on the cluster** with exactly the versions in `worker-image/requirements.txt` |
@@ -53,7 +55,7 @@ sudo ansible-playbook rsdat.yml \
 | `rsdat_dask_log_directory` | `$HOME/.rsdat/dask-logs` | Directory on the cluster for worker logs, one file per job. The job creates it, so nothing needs to be set up on the cluster |
 | `rsdat_dask_job_directory` | `""` (Slurm user's home) | Working directory of the worker jobs on the cluster, created by the job if missing |
 | `rsdat_dask_scheduler_location` | `workspace` | Where the Dask scheduler runs: `workspace` (in JupyterLab) or `cluster` (a Slurm job that opens an SSH tunnel to the workspace). See [Networking](#networking) |
-| `rsdat_dask_worker_route` | `gateway` | Scheduler on the workspace: how it reaches the workers, `gateway` (through a gateway job's SSH tunnel) or `direct` |
+| `rsdat_dask_worker_route` | `gateway` | Scheduler on the workspace: how it reaches the workers, `gateway` (through a gateway job's SSH tunnel), `sshuttle` (through sshuttle to the login node) or `direct` |
 | `rsdat_dask_gateway_cores`, `rsdat_dask_gateway_memory`, `rsdat_dask_gateway_walltime` | `16`, `28GiB`, `12:00:00` | Gateway job; partition and account as the workers. Resubmitted when it ends while clusters use it |
 | `rsdat_dask_gateway_job_extra_directives` | `[]` | Extra `#SBATCH` options for the gateway job |
 | `rsdat_dask_gateway_renew_before` | `1800` | Seconds before the gateway job's walltime that its replacement starts (at most a quarter of the walltime) |
@@ -105,6 +107,15 @@ rsdat-slurm-token        # paste the output of 'scontrol token lifespan=86400' r
 ```
 
 The token is stored in `~/.config/rsdat/slurm.env` and read on every Slurm command, so nothing needs a restart. `rsdat-slurm-token --status` shows for whom it is and when it expires; when it has, run `rsdat-slurm-token` again.
+
+### Slurm over SSH
+
+With `rsdat_slurm_access: ssh`, `sbatch`, `squeue`, `scancel`, `sinfo` and `scontrol` in `/opt/rsdat/slurm-bin` run on the login node `rsdat_slurm_host` over SSH, as `rsdat_slurm_user`, instead of through the REST API. There is no token: `rsdat-slurm-token` isn't installed, and `rsdat_slurm_api_url` isn't needed.
+
+- The playbook generates an SSH key for the workspace in `~rsdat/.config/rsdat/slurm-ssh/id_ed25519` and prints its public key at the end of the run. The start-here notebook shows it too. Add the public key in the **SURF CUA portal** (https://portal.cua.surf.nl). Until it's registered, Slurm commands fail with `Permission denied (publickey)`.
+- The login node's host keys are read once at deployment (`ssh-keyscan`, trust on first use) into `known_hosts` next to the key. The SSH settings are in `/etc/rsdat/slurm-ssh.conf` (host alias `rsdat-slurm`; test with `ssh -F /etc/rsdat/slurm-ssh.conf rsdat-slurm true`). The Slurm commands share one SSH connection, kept open for 10 minutes after the last command.
+- The key logs in without a second factor, so the cluster must allow key-only logins from the workspace.
+- The `sshuttle` worker route uses the same key, host and user, with either access mode.
 
 **Dask.** In JupyterLab, open the Dask sidebar and click **New** to create a cluster, then **Scale** it. In a notebook:
 
@@ -176,15 +187,16 @@ Dask needs connections in **both** directions between the scheduler and its work
 
 Each worker job runs two processes, each with its own port: the **nanny**, a small supervisor that starts the worker process and restarts it when it crashes or exceeds its memory limit, and the **worker** itself. The scheduler connects to both: to the worker for data and `client.run`, and to the nanny to restart or stop the worker.
 
-Three set-ups, with `rsdat_dask_scheduler_location` and `rsdat_dask_worker_route`:
+Four set-ups, with `rsdat_dask_scheduler_location` and `rsdat_dask_worker_route`:
 
 | | Scheduler | Scheduler → workers | Cluster firewall | Workspace firewall |
 |---|---|---|---|---|
 | **Gateway** (default) | in JupyterLab | through the gateway job's SSH tunnel | nothing | 8786 and SSH from the compute nodes |
 | **Scheduler on the cluster** | Slurm job | inside the cluster | nothing | SSH from the compute nodes |
+| **sshuttle** | in JupyterLab | through sshuttle, over SSH to the login node | nothing | 8786 from the compute nodes |
 | **Direct** | in JupyterLab | directly | workspace → workers' ports | 8786 from the compute nodes |
 
-None of them logs in to the cluster with SSH (which on Snellius needs MFA): the workspace only uses the Slurm REST API, and where SSH is used, a job on the cluster connects to the workspace.
+Except for sshuttle (and `rsdat_slurm_access: ssh`), none of them logs in to the cluster with SSH: the workspace only uses the Slurm REST API, and where SSH is used, a job on the cluster connects to the workspace.
 
 ### Gateway (default)
 
@@ -209,6 +221,16 @@ None of them logs in to the cluster with SSH (which on Snellius needs MFA): the 
 
 - The scheduler job uses `rsdat_dask_scheduler_cores`/`_memory`/`_walltime` in the workers' partition and account. When it ends, the workers stop too (after their death timeout), so give it the longest walltime you need. It also stops when it can't open the tunnel for `rsdat_dask_tunnel_give_up` seconds, e.g. when the workspace is gone.
 - Creating a cluster waits for the scheduler job in the queue.
+
+### sshuttle
+
+`rsdat_dask_scheduler_location: workspace`, `rsdat_dask_worker_route: sshuttle`. As in JupyterDaskCloud2Cluster: the scheduler runs in JupyterLab, and [sshuttle](https://github.com/sshuttle/sshuttle) on the workspace routes all TCP traffic to `rsdat_dask_worker_network` through one SSH connection to the login node `rsdat_slurm_host`. For Dask this is the same as **Direct**: the scheduler connects to the workers' addresses, and sshuttle carries the connections. No gateway job, no SSH server or tunnel key on the workspace.
+
+- sshuttle runs as root in the `rsdat-sshuttle` systemd service (it sets up iptables rules), with the workspace's SSH key (see [Slurm over SSH](#slurm-over-ssh)); register it in the SURF CUA portal. Until then the service retries every 30 seconds. `systemctl status rsdat-sshuttle` and `journalctl -u rsdat-sshuttle` show its state.
+- The login node needs `python3` (sshuttle runs a small Python server there).
+- `rsdat_dask_worker_network` is required and must not overlap the workspace's own networks (`ip -4 addr`), or sshuttle would route the workspace's own traffic to the cluster.
+- **Workers → scheduler:** as with the gateway, directly to `rsdat_dask_contact_host:8786`: open the port to the compute nodes' egress addresses.
+- Like the gateway's proxy, the route is for the whole workspace: any process on it reaches the worker network through the login node, as your cluster user. Dask itself stays protected by TLS.
 
 ### Direct
 
@@ -237,6 +259,7 @@ None of them logs in to the cluster with SSH (which on Snellius needs MFA): the 
 - JupyterLab runs as one user (`rsdat`) for the whole workspace. Its own login is disabled because SRC-Nginx does the SRAM login. It listens on `127.0.0.1` only. Everyone in the CO who can open the workspace shares this JupyterLab and its Slurm token. For per-user sessions, use JupyterHub instead (follow-up).
 - **Prefect API.** The machine API at `/prefect/machine-api/` is behind Prefect's password instead of the SRAM login, so the Dask workers can reach it; the UI and `/prefect/api/` stay behind SRAM. Anyone with the password can read and change flow runs. Everyone who can open this JupyterLab can read it (`PREFECT_API_AUTH_STRING`). It's stored in `/etc/rsdat/prefect-api-password` (root) and in `/etc/rsdat/prefect-*.env` (root and the `rsdat` group).
 - A token given as `rsdat_slurm_jwt` is stored in `/etc/rsdat/slurm.env`, readable only by root and the `rsdat` group.
+- **Cluster SSH key** (`ssh` access, `sshuttle`). `~rsdat/.config/rsdat/slurm-ssh/id_ed25519` (mode 600) logs in to the cluster as `rsdat_slurm_user` without a second factor. Everyone who can open this JupyterLab can use it, as with the Slurm token. Remove it from the CUA portal when the workspace is deleted.
 
 ## Testing
 
@@ -249,9 +272,11 @@ docker build -t slurm-cli-proxy-test testing/slurm-container
 tests/run.sh                       # gateway (default); KEEP=1 to keep the containers
 SCHEDULER=cluster tests/run.sh     # scheduler on the cluster
 ROUTE=direct tests/run.sh          # scheduler in JupyterLab, direct connections
+ROUTE=sshuttle tests/run.sh        # scheduler in JupyterLab, sshuttle to the Slurm container
+ACCESS=ssh tests/run.sh            # Slurm commands over SSH (combines with the above)
 ```
 
-With the gateway or the scheduler on the cluster, the test blocks every connection from the workspace to the Slurm container except to slurmrestd, as the Snellius firewall does.
+With the gateway or the scheduler on the cluster, the test blocks every connection from the workspace to the Slurm container except to slurmrestd, as the Snellius firewall does (with sshuttle or `ACCESS=ssh`, also except SSH). With `ACCESS=ssh` or sshuttle, the Slurm container runs an SSH server, and the test adds the workspace's public key to `testuser`'s `authorized_keys` after the first playbook run (instead of the CUA portal).
 
 The checks:
 - A second playbook run changes nothing.
