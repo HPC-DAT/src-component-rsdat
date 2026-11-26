@@ -27,24 +27,51 @@ location {{ rsdat_jupyterlab_path }} {
 {{ proxy_headers() }}
 }
 {% if rsdat_prefect_enabled | bool %}
-
-# Prefect API (used by the Prefect UI in the browser)
-# The API also serves the Dask workers (Prefect tasks with DaskTaskRunner), which can't do the
-# SRAM login: with rsdat_prefect_api_auth it's protected by Prefect's own password instead.
-location {{ rsdat_prefect_path }}api/ {
-{% if not rsdat_prefect_api_auth | bool %}
-{{ auth() }}
+{% if rsdat_prefect_api_auth | bool %}
+{% set prefect_basic = (rsdat_user ~ ':' ~ rsdat_prefect_password) | b64encode %}
 {% endif %}
+{% macro prefect_user() %}
+{{ auth() }}
+{% if rsdat_prefect_api_auth | bool %}
+    # after the SRAM login nginx adds the Prefect password: users never see or type it
+    proxy_set_header Authorization "Basic {{ prefect_basic }}";
+{% endif %}
+{% endmacro %}
+
+# Prefect for people (browser): UI and the API it uses, behind the SRAM login
+location {{ rsdat_prefect_path }}api/ {
+{{ prefect_user() }}
     proxy_pass http://127.0.0.1:{{ rsdat_prefect_port }}/api/;
 {{ proxy_headers() }}
 }
 
-# Prefect UI
 location {{ rsdat_prefect_path }} {
-{{ auth() }}
+{{ prefect_user() }}
     proxy_pass http://127.0.0.1:{{ rsdat_prefect_port }};
 {{ proxy_headers() }}
 }
+{% if rsdat_prefect_api_auth | bool %}
+
+# The UI asks for the Prefect password when the server has one; behind the SRAM login nginx
+# sends it, so tell the UI not to ask
+location ~ ^{{ rsdat_prefect_path }}(.+/)?ui-settings$ {
+{{ prefect_user() }}
+    proxy_pass http://127.0.0.1:{{ rsdat_prefect_port }};
+{{ proxy_headers() }}
+    proxy_set_header Accept-Encoding "";
+    sub_filter_types application/json;
+    sub_filter '"auth":"BASIC"' '"auth":null';
+    sub_filter_once on;
+}
+
+# Prefect for machines: notebooks and the Dask workers (Prefect tasks with DaskTaskRunner),
+# which can't do the SRAM login. Protected by Prefect's own password instead (PREFECT_API_URL
+# and PREFECT_API_AUTH_STRING in their settings)
+location {{ rsdat_prefect_machine_path }} {
+    proxy_pass http://127.0.0.1:{{ rsdat_prefect_port }}/api/;
+{{ proxy_headers() }}
+}
+{% endif %}
 {% endif %}
 {% if rsdat_nginx_root_redirect | bool %}
 

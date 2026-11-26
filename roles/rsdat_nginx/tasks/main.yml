@@ -18,4 +18,5 @@
     owner: root
     group: www-data
     mode: "0640"
+  diff: false   # has the Prefect password
   notify: Reload nginx
