@@ -55,21 +55,8 @@ rsdat_prefect_listen: "{{ '127.0.0.1' if rsdat_nginx_enabled | bool else '0.0.0.
 rsdat_fqdn_resolve_locally: true
 
 # --- The Slurm cluster (shared by the Slurm and JupyterLab roles) ---
-# How the workspace runs the Slurm commands (sbatch, squeue, scancel, ...):
-# - "api": through the cluster's Slurm REST API (rsdat_slurm_api_url, SLURM-CLI-API-Proxy
-#   client), with a Slurm token
-# - "ssh": on the login node rsdat_slurm_host over SSH, as rsdat_slurm_user, with a key the
-#   playbook generates (rsdat_slurm_ssh_dir/id_ed25519; register its .pub in the SURF CUA
-#   portal, https://portal.cua.surf.nl)
-rsdat_slurm_access: api
-# Slurm user name. Access "api": optional, the user of the token (users can set their own token
-# with 'rsdat-slurm-token'). Access "ssh" or worker route "sshuttle": the SSH login user (required).
-rsdat_slurm_user: ""
-# Login node for SSH (access "ssh", worker route "sshuttle"), e.g. snellius.surf.nl
-rsdat_slurm_host: ""
-# The workspace's SSH key and known_hosts for rsdat_slurm_host
-rsdat_slurm_ssh_dir: "{{ rsdat_home }}/.config/rsdat/slurm-ssh"
-rsdat_slurm_ssh_config: "{{ rsdat_config_dir }}/slurm-ssh.conf"
+# The workspace runs the Slurm commands (sbatch, squeue, scancel, ...) through the cluster's
+# Slurm REST API (rsdat_slurm_api_url, SLURM-CLI-API-Proxy client), with a Slurm token.
 
 # Where the Dask scheduler runs:
 # - "workspace": in JupyterLab here. Workers connect to it on rsdat_dask_scheduler_port; how it
@@ -82,12 +69,5 @@ rsdat_dask_scheduler_location: workspace
 # - "gateway": through a small gateway job on the cluster that opens a reverse SSH tunnel to
 #   this workspace (a SOCKS proxy into rsdat_dask_worker_network). For when the workspace
 #   can't connect to the compute nodes (Snellius).
-# - "sshuttle": through sshuttle on the workspace (a system service, as root), which routes
-#   rsdat_dask_worker_network over one SSH connection to rsdat_slurm_host. Needs python3 on the
-#   login node and the workspace's key registered on the cluster.
 # - "direct": directly; the cluster firewall must allow the workspace to reach the workers.
 rsdat_dask_worker_route: gateway
-
-# Derived: sshuttle in use, and the workspace's SSH key for the cluster needed
-rsdat_dask_sshuttle: "{{ rsdat_dask_scheduler_location == 'workspace' and rsdat_dask_worker_route == 'sshuttle' }}"
-rsdat_slurm_ssh: "{{ rsdat_slurm_access == 'ssh' or rsdat_dask_sshuttle | bool }}"

@@ -39,7 +39,7 @@ rsdat_dask_log_directory: "$HOME/.rsdat/dask-logs"
 # ("" = home of the Slurm user)
 rsdat_dask_job_directory: ""
 # Directory ON THE NODE where workers spill data and keep temporary files. Default: the job's
-# node-local scratch ($TMPDIR on Snellius/Spider), else /tmp. Avoid the home/project filesystem:
+# node-local scratch ($TMPDIR on Snellius), else /tmp. Avoid the home/project filesystem:
 # spilling there is slow and uses up the quota.
 rsdat_dask_local_directory: "${TMPDIR:-/tmp}"
 

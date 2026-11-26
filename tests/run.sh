@@ -11,14 +11,9 @@
 #                   testing/slurm-container in the SLURM-CLI-API-Proxy-client repo). The test
 #                   adds an SSH client, iptables and bokeh to it (tests/Dockerfile.slurm).
 #   SCHEDULER       where the Dask scheduler runs: 'workspace' (default) or 'cluster'
-#   ROUTE           scheduler on the workspace: how it reaches the workers, 'gateway' (default),
-#                   'sshuttle' or 'direct'. With 'gateway', 'sshuttle' or SCHEDULER=cluster the
-#                   workspace can't connect to the Slurm container except to slurmrestd (and SSH
-#                   when it's used), as on Snellius.
-#   ACCESS          how the workspace runs the Slurm commands: 'api' (default, REST) or 'ssh'.
-#                   With 'ssh' or ROUTE=sshuttle the Slurm container runs an SSH server, and the
-#                   workspace's generated key is added to testuser's authorized_keys after the
-#                   first playbook run (in place of the SURF CUA portal).
+#   ROUTE           scheduler on the workspace: how it reaches the workers, 'gateway' (default)
+#                   or 'direct'. With 'gateway' or SCHEDULER=cluster the workspace can't connect
+#                   to the Slurm container except to slurmrestd, as on Snellius.
 #   NETWORK_MODE    'bridge' (default: own docker network, works with Docker Desktop) or
 #                   'host' (workspace on the host network, for hosts that need a proxy)
 #   EXTRA_ENV       extra -e options for the ansible run (e.g. proxy settings)
@@ -30,9 +25,7 @@ WS_IMAGE="${WS_IMAGE:-rsdat-test-workspace}"
 NETWORK_MODE="${NETWORK_MODE:-bridge}"
 SCHEDULER="${SCHEDULER:-workspace}"
 ROUTE="${ROUTE:-gateway}"
-ACCESS="${ACCESS:-api}"
-BLOCKED=$([ "$SCHEDULER" = cluster ] || [ "$ROUTE" = gateway ] || [ "$ROUTE" = sshuttle ] && echo 1 || echo 0)
-USE_SSH=$([ "$ACCESS" = ssh ] || { [ "$SCHEDULER" = workspace ] && [ "$ROUTE" = sshuttle ]; } && echo 1 || echo 0)
+BLOCKED=$([ "$SCHEDULER" = cluster ] || [ "$ROUTE" = gateway ] && echo 1 || echo 0)
 NET=rsdat-test
 WS=rsdat-ws
 SLURM=rsdat-slurm
@@ -78,19 +71,13 @@ if [ "$BLOCKED" = 1 ]; then
     else
         WS_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$WS")"
     fi
-    ALLOWED=$([ "$USE_SSH" = 1 ] && echo 6820,22 || echo 6820)
-    docker exec "$SLURM" iptables -A INPUT -p tcp --syn -s "$WS_IP" -m multiport ! --dports "$ALLOWED" -j REJECT --reject-with tcp-reset
-    echo "Blocked connections from the workspace to the Slurm container (except ports $ALLOWED)"
+    docker exec "$SLURM" iptables -A INPUT -p tcp --syn -s "$WS_IP" ! --dport 6820 -j REJECT --reject-with tcp-reset
+    echo "Blocked connections from the workspace to the Slurm container (except port 6820)"
 fi
 
 echo -n "Waiting for Slurm"
 for _ in $(seq 60); do docker exec "$SLURM" scontrol ping 2>/dev/null | grep -q UP && break; echo -n .; sleep 2; done; echo
 TOKEN="$(docker exec "$SLURM" scontrol token username=testuser lifespan=7200 | cut -d= -f2)"
-if [ "$USE_SSH" = 1 ]; then
-    # the login node: an SSH server for testuser (the playbook reads its host keys)
-    docker exec "$SLURM" sh -c 'mkdir -p /run/sshd && ssh-keygen -A && /usr/sbin/sshd'
-    if [ "$NETWORK_MODE" = host ]; then SLURM_HOST=localhost; else SLURM_HOST="$SLURM"; fi
-fi
 
 echo "Copying component into the workspace..."
 docker exec "$WS" mkdir -p /opt/src-component-rsdat
@@ -116,10 +103,7 @@ echo "== rsdat.yml"
 cat > /tmp/rsdat-test-vars.$$.yml <<VARS
 rsdat_fqdn: localhost
 rsdat_nginx_auth: sram
-rsdat_slurm_access: $ACCESS
 rsdat_slurm_api_url: "$SLURM_URL"
-rsdat_slurm_host: "${SLURM_HOST:-}"
-rsdat_slurm_user: testuser
 rsdat_slurm_jwt: "$TOKEN"
 rsdat_dask_worker_python: /opt/venv/bin/python
 rsdat_dask_queue: debug
@@ -145,22 +129,13 @@ VARS
 docker cp /tmp/rsdat-test-vars.$$.yml "$WS":/opt/src-component-rsdat/tests/test-vars.yml
 rm -f /tmp/rsdat-test-vars.$$.yml
 run_playbook rsdat.yml -e @tests/test-vars.yml
-if [ "$USE_SSH" = 1 ]; then
-    # in place of the SURF CUA portal: register the workspace's key for testuser
-    docker exec "$WS" cat /home/rsdat/.config/rsdat/slurm-ssh/id_ed25519.pub \
-        | docker exec -i "$SLURM" sh -c 'mkdir -p ~testuser/.ssh && cat >> ~testuser/.ssh/authorized_keys && chown -R testuser ~testuser/.ssh && chmod 700 ~testuser/.ssh && chmod 600 ~testuser/.ssh/authorized_keys'
-    if [ "$ROUTE" = sshuttle ]; then
-        echo -n "Waiting for sshuttle"
-        for _ in $(seq 30); do docker exec "$WS" journalctl -u rsdat-sshuttle --since=-40s 2>/dev/null | grep -q "Connected to server" && break; echo -n .; sleep 3; done; echo
-    fi
-fi
 echo "== idempotence (second run)"
 run_playbook rsdat.yml -e @tests/test-vars.yml | tee /tmp/rsdat-second-run.log | tail -3
 grep -q "changed=0" /tmp/rsdat-second-run.log && echo "PASS idempotent" || { echo "FAIL second run changed something"; exit 1; }
 
 echo "== checks"
 docker exec -e RSDAT_EXPECT_WORKER_NET="$WORKER_NET" -e RSDAT_EXPECT_CONTACT_HOST="$CONTACT_HOST" \
-    -e RSDAT_EXPECT_SCHEDULER="$SCHEDULER" -e RSDAT_EXPECT_ROUTE="$ROUTE" -e RSDAT_EXPECT_ACCESS="$ACCESS" \
+    -e RSDAT_EXPECT_SCHEDULER="$SCHEDULER" -e RSDAT_EXPECT_ROUTE="$ROUTE" \
     -e RSDAT_GATEWAY_IDLE=30 \
     "$WS" bash /opt/src-component-rsdat/tests/check_workspace.sh
 if docker exec "$SLURM" sh -c 'grep -l "Start worker at" /home/testuser/.rsdat/dask-logs/*.log' >/dev/null 2>&1; then
